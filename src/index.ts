@@ -554,9 +554,10 @@ export default async function (pi: ExtensionAPI) {
   pi.registerProvider(providerId, {
     name: "Azure Foundry",
     baseUrl: endpoint,
-    // For api-key auth, store the key so pi can display it in settings.
-    // For azure-identity, leave empty — tokens are fetched at request time.
-    apiKey: config.auth.type === "api-key" ? config.auth.apiKey : "",
+    // For api-key auth, store the real key. For azure-identity, pass a sentinel
+    // so pi's required-field validation passes — tokens are always fetched at
+    // request time via providerAuthMap and this value is never used.
+    apiKey: config.auth.type === "api-key" ? config.auth.apiKey : "azure-identity",
     api: "azure-foundry" as Api,
     streamSimple: streamAzureFoundry,
     models: deployments.map(deploymentToModel),
