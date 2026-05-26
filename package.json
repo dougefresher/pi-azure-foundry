@@ -1,6 +1,6 @@
 {
   "name": "@nquandt/pi-azure-foundry",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "Pi extension for Azure AI Foundry — discovers deployments and registers models",
   "type": "module",
   "main": "./dist/index.js",
@@ -29,7 +29,9 @@
     "README.md",
     "LICENSE"
   ],
-  "bundledDependencies": ["@azure/identity"],
+  "bundledDependencies": [
+    "@azure/identity"
+  ],
   "pi": {
     "extensions": [
       "./dist/index.js"
