@@ -49,7 +49,7 @@ interface Config {
 // =============================================================================
 
 /** Azure AI Foundry scope for Entra ID tokens */
-const AZURE_AI_SCOPE = "https://cognitiveservices.azure.com/.default";
+const AZURE_AI_SCOPE = "https://ai.azure.com/.default";
 
 /** Cached token — refreshed when within 5 min of expiry */
 let cachedToken: AccessToken | null = null;
