@@ -1,0 +1,8 @@
+{
+  "resourceId": "your-resource-name-eastus2",
+  "projectId": "your-project-name-eastus2",
+  "auth": {
+    "type": "api-key",
+    "apiKey": "your-api-key-here"
+  }
+}

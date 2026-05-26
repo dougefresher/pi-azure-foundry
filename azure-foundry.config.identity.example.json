@@ -1,0 +1,7 @@
+{
+  "resourceId": "your-resource-name-eastus2",
+  "projectId": "your-project-name-eastus2",
+  "auth": {
+    "type": "azure-identity"
+  }
+}
