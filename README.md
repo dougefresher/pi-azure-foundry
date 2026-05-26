@@ -1,275 +1,155 @@
-# Azure Foundry Provider for Pi
+# pi-azure-foundry
 
-A custom pi extension that provides access to Azure Foundry models with **two authentication methods**:
+A [pi](https://pi.dev) extension that connects to your [Azure AI Foundry](https://ai.azure.com) project, auto-discovers your chat deployments, and registers them as models in pi.
 
-1. **API Key Authentication** - Direct API key access
-2. **Entra ID/Managed Identity** - OAuth via Azure Entra ID (supports managed identity, device code, service principal)
+Supports both **API key** and **Azure identity** (Managed Identity, Azure CLI, service principal, etc.) authentication.
 
-## Features
+## Requirements
 
-- ✅ Support for multiple Azure Foundry models (GPT-4, GPT-4o, GPT-3.5)
-- ✅ API Key authentication for simple setup
-- ✅ Entra ID OAuth with managed identity support for enterprise environments
-- ✅ Device code flow for restricted environments
-- ✅ Full streaming support via OpenAI-compatible API
-- ✅ Token counting and usage tracking
+- A pi installation (`npm install -g @earendil-works/pi-coding-agent`)
+- An Azure AI Foundry project with one or more chat-capable deployments
+
+---
 
 ## Installation
 
-```bash
-npm install
-npm run build
-```
-
-Or use directly with pi during development:
+### Global (works in any project)
 
 ```bash
-pi -e /path/to/pi-azure-foundry
+pi install npm:@nquandt/pi-azure-foundry
 ```
 
-## Usage
-
-### Method 1: API Key Authentication
-
-Set the environment variable and start pi:
+### Try without installing
 
 ```bash
-export AZURE_FOUNDRY_API_KEY="your-api-key-here"
-pi -e /path/to/pi-azure-foundry
+pi -e npm:@nquandt/pi-azure-foundry
 ```
 
-Or inline:
-
-```bash
-AZURE_FOUNDRY_API_KEY="your-api-key-here" pi -e /path/to/pi-azure-foundry
-```
-
-### Method 2: Entra ID Authentication
-
-No API key needed - use OAuth with Entra ID:
-
-```bash
-pi -e /path/to/pi-azure-foundry
-```
-
-Then in pi, run:
-
-```
-/login azure-foundry
-```
-
-This supports three options:
-
-#### Option A: Device Code Flow (Recommended for corporate environments)
-
-- Most compatible with corporate networks and restricted environments
-- No browser needed
-- Supports managed identity in containerized environments
-
-#### Option B: API Key Entry
-
-- Paste your API key directly when prompted
-
-#### Option C: Automatic (with environment variables)
-
-Set these environment variables and authentication happens automatically:
-
-```bash
-# Service Principal
-export AZURE_CLIENT_ID="your-client-id"
-export AZURE_CLIENT_SECRET="your-client-secret"
-export AZURE_TENANT_ID="your-tenant-id"
-
-# Or Managed Identity (in Azure VM/Container)
-export AZURE_CLIENT_ID="your-managed-identity-client-id"  # optional
-
-# Then start pi
-pi -e /path/to/pi-azure-foundry
-```
+---
 
 ## Configuration
 
-### Environment Variables
+Create an `azure-foundry.config.json` file. The extension looks in two places, in order:
 
-```bash
-# Authentication (choose one)
-AZURE_FOUNDRY_API_KEY="sk-..."                    # API key
-AZURE_FOUNDRY_API_URL="https://..."               # Override default endpoint
+1. `<current working directory>/azure-foundry.config.json` — project-specific
+2. `~/.pi/azure-foundry.config.json` — global fallback
 
-# Service Principal (optional, for automatic Entra ID auth)
-AZURE_CLIENT_ID="..."
-AZURE_CLIENT_SECRET="..."
-AZURE_TENANT_ID="..."
+The global location is recommended for most users since it works across all projects.
 
-# Or use managed identity in Azure (automatic)
-IDENTITY_ENDPOINT="http://..."                    # Set by Azure
-```
+### Finding your resource and project IDs
 
-### API Endpoint
-
-By default, uses `https://api.azurefoundry.com/v1`. Override with:
-
-```bash
-export AZURE_FOUNDRY_API_URL="https://your-custom-endpoint.com/v1"
-```
-
-## Available Models
-
-- `gpt-4-turbo` - GPT-4 Turbo (reasoning support)
-- `gpt-4o` - GPT-4o (reasoning support)
-- `gpt-4o-mini` - GPT-4o Mini
-- `gpt-3.5-turbo` - GPT-3.5 Turbo
-
-Models support:
-- Text and image inputs (except GPT-3.5-Turbo which is text-only)
-- Streaming responses
-- Token counting
-- Extended thinking (where available)
-
-## Architecture
-
-### Authentication Flow
+Both values come from your Azure AI Foundry project URL:
 
 ```
-┌─────────────────────────────────────────┐
-│  User starts pi with -e flag             │
-└────────────┬────────────────────────────┘
-             │
-             ├─ Check AZURE_FOUNDRY_API_KEY
-             │  ├─ YES → Use API Key Auth ✓
-             │  └─ NO  ↓
-             │
-             ├─ Check Azure Environment
-             │  ├─ YES → Use Entra ID ✓
-             │  └─ NO  ↓
-             │
-             ├─ User runs /login azure-foundry
-             │  ├─ Select: API Key
-             │  ├─ Select: Device Code ✓
-             │  └─ Select: Manual Token Entry
-             │
-             └─ Authentication ready
-
+https://ai.azure.com/build/overview?wsid=/subscriptions/.../resourceGroups/.../providers/Microsoft.MachineLearningServices/workspaces/YOUR-PROJECT
 ```
 
-### Provider Configuration
+Or from the Azure portal — your **resource name** is the Azure AI Services resource name, and your **project name** is the Foundry project name. They are often the same value.
 
-The extension registers a provider with:
-- **API**: `openai-completions` (OpenAI-compatible streaming)
-- **OAuth**: Entra ID device code, service principal, managed identity
-- **Models**: Full model definitions with costs and context windows
-
-### Credential Storage
-
-OAuth credentials are stored in `~/.pi/agent/auth.json`:
+### API key auth
 
 ```json
 {
-  "azure-foundry": {
-    "access": "token_value",
-    "refresh": "refresh_token_or_marker",
-    "expires": 1234567890000
+  "resourceId": "my-resource-eastus2",
+  "projectId": "my-project-eastus2",
+  "auth": {
+    "type": "api-key",
+    "apiKey": "your-api-key-here"
   }
 }
 ```
 
-## Example Usage in Pi
+Get your API key from the Azure AI Foundry portal under **Settings → API keys**.
 
-```bash
-# With API key
-AZURE_FOUNDRY_API_KEY="sk-..." pi -e ./pi-azure-foundry
+### Azure identity auth
 
-# With Entra ID (manual login)
-pi -e ./pi-azure-foundry
-# Then: /login azure-foundry
-
-# With service principal (automatic)
-AZURE_CLIENT_ID="..." AZURE_CLIENT_SECRET="..." AZURE_TENANT_ID="..." \
-  pi -e ./pi-azure-foundry
-
-# With custom endpoint
-AZURE_FOUNDRY_API_URL="https://custom.azurefoundry.com/v1" \
-  AZURE_FOUNDRY_API_KEY="sk-..." \
-  pi -e ./pi-azure-foundry
-```
-
-## Troubleshooting
-
-### "No authentication detected"
-
-Make sure you either:
-1. Set `AZURE_FOUNDRY_API_KEY` before starting pi
-2. Run `/login azure-foundry` after starting pi
-3. Set Azure credential environment variables (AZURE_CLIENT_ID, AZURE_CLIENT_SECRET, AZURE_TENANT_ID)
-
-### "Failed to acquire Entra ID token"
-
-Ensure:
-1. You have `@azure/identity` installed in pi's node_modules
-2. Your Azure credentials are valid
-3. You have permissions to access Azure Foundry
-
-### Device Code Not Working
-
-Try setting explicitly:
-
-```bash
-export IDENTITY_ENDPOINT="http://localhost:40342/metadata/identity/oauth2/token"
-pi -e ./pi-azure-foundry
-```
-
-## Development
-
-### Build
-
-```bash
-npm run build
-```
-
-### Watch mode
-
-```bash
-npm run dev
-```
-
-## Advanced Configuration
-
-### Custom Models
-
-Edit `src/index.ts` and modify the `MODELS` array:
-
-```typescript
+```json
 {
-  id: "custom-model",
-  name: "My Custom Model",
-  reasoning: true,
-  input: ["text", "image"],
-  cost: { input: X, output: Y, cacheRead: 0, cacheWrite: 0 },
-  contextWindow: 128000,
-  maxTokens: 4096,
+  "resourceId": "my-resource-eastus2",
+  "projectId": "my-project-eastus2",
+  "auth": {
+    "type": "azure-identity"
+  }
 }
 ```
 
-### Multiple Azure Foundry Accounts
+No key needed. Uses [`DefaultAzureCredential`](https://learn.microsoft.com/en-us/javascript/api/@azure/identity/defaultazurecredential) which automatically tries, in order:
 
-Register multiple providers:
+| Method | How to set up |
+|---|---|
+| Environment variables | Set `AZURE_CLIENT_ID`, `AZURE_CLIENT_SECRET`, `AZURE_TENANT_ID` |
+| Workload identity | Configured automatically in AKS |
+| Managed identity | Configured automatically on Azure VMs / App Service / Container Apps |
+| Azure CLI | Run `az login` |
+| Azure Developer CLI | Run `azd auth login` |
+| Visual Studio Code | Sign in via the Azure extension |
 
-```typescript
-pi.registerProvider("azure-foundry-prod", { /* prod config */ });
-pi.registerProvider("azure-foundry-dev", { /* dev config */ });
+For local development, `az login` is the easiest option.
+
+---
+
+## Usage
+
+Once installed and configured, start pi normally. On startup you'll see:
+
+```
+[Azure Foundry] Loading config from: /Users/you/.pi/azure-foundry.config.json
+[Azure Foundry] Auth: api-key
+[Azure Foundry] Fetching deployments from: https://my-resource.services.ai.azure.com/...
+[Azure Foundry] Found 3 deployment(s): claude-sonnet (Anthropic), gpt-4o (Microsoft), ...
+[Azure Foundry] ✓ Registered 3 model(s)
 ```
 
-### Token Refresh Customization
+Your deployments will appear in the pi model picker under the **Azure Foundry** provider.
 
-Modify the `refreshEntraIDToken` function to implement custom refresh logic for your enterprise setup.
+---
+
+## How it works
+
+- **Deployment discovery** — on startup the extension calls the Foundry deployments API and filters to chat-capable deployments. No model list to maintain manually.
+- **Routing** — Anthropic deployments are routed to `/anthropic/v1/messages` (native Messages API with tool use and extended thinking). All other deployments use `/openai/deployments/{id}/chat/completions` (OpenAI-compatible).
+- **Auth headers** — API key auth sends `api-key: <key>` on the OpenAI route and `Authorization: Bearer <key>` on the Anthropic route. Azure identity sends `Authorization: Bearer <entra-token>` on both. Tokens are cached and refreshed automatically 5 minutes before expiry.
+
+---
+
+## Supported models
+
+The extension auto-discovers whatever is deployed in your Foundry project. Known model capabilities are pre-configured for:
+
+| Model | Context | Max output | Reasoning | Vision |
+|---|---|---|---|---|
+| claude-sonnet-4-5 / 4-6 | 200K | 16K | ✅ | ✅ |
+| claude-haiku-4-5 | 200K | 16K | — | ✅ |
+| claude-opus-4-5 | 200K | 32K | ✅ | ✅ |
+| gpt-4o | 128K | 4K | — | ✅ |
+| gpt-4o-mini | 128K | 4K | — | ✅ |
+| Kimi-K2.5 / K2.6 | 131K | 8K | — | — |
+
+Any deployment not in the above list falls back to 128K context / 4K output / text-only.
+
+---
+
+## Development
+
+```bash
+git clone https://github.com/nquandt/pi-azure-foundry
+cd pi-azure-foundry
+npm install
+npm run build
+
+# Test against your own config
+cp azure-foundry.config.example.json azure-foundry.config.json
+# edit azure-foundry.config.json with your real values
+pi -e .
+```
+
+```bash
+npm run dev       # watch mode
+npm run type-check  # type check without building
+```
+
+---
 
 ## License
 
 MIT
-
-## Support
-
-For issues with:
-- **Pi extension system**: See pi documentation
-- **Azure Foundry API**: Check Azure Foundry documentation
-- **Entra ID authentication**: Consult Azure AD documentation
