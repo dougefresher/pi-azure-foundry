@@ -108,21 +108,55 @@ function loadConfig(): Config {
 // Deployment → Model mapping
 // =============================================================================
 
-const MODEL_DEFAULTS: Record<string, { contextWindow: number; maxTokens: number; reasoning: boolean; input: ("text" | "image")[] }> = {
+type OpenAITokenLimitParam = "max_tokens" | "max_completion_tokens";
+
+interface ModelDefaults {
+  contextWindow: number;
+  maxTokens: number;
+  reasoning: boolean;
+  input: ("text" | "image")[];
+  /** OpenAI-compat token limit field; newer GPT-5/o-series models require max_completion_tokens */
+  openaiTokenLimit?: OpenAITokenLimitParam;
+}
+
+const MODEL_DEFAULTS: Record<string, ModelDefaults> = {
   "claude-sonnet-4-5":  { contextWindow: 200000, maxTokens: 16384, reasoning: true,  input: ["text", "image"] },
   "claude-sonnet-4-6":  { contextWindow: 200000, maxTokens: 16384, reasoning: true,  input: ["text", "image"] },
   "claude-haiku-4-5":   { contextWindow: 200000, maxTokens: 16384, reasoning: false, input: ["text", "image"] },
   "claude-opus-4-5":    { contextWindow: 200000, maxTokens: 32000, reasoning: true,  input: ["text", "image"] },
-  "gpt-5.4-nano":       { contextWindow: 128000, maxTokens: 16384, reasoning: false, input: ["text", "image"] },
+  "gpt-5.4-nano":       { contextWindow: 128000, maxTokens: 16384, reasoning: false, input: ["text", "image"], openaiTokenLimit: "max_completion_tokens" },
   "gpt-4o":             { contextWindow: 128000, maxTokens: 4096,  reasoning: false, input: ["text", "image"] },
   "gpt-4o-mini":        { contextWindow: 128000, maxTokens: 4096,  reasoning: false, input: ["text", "image"] },
   "Kimi-K2.5":          { contextWindow: 131072, maxTokens: 8192,  reasoning: false, input: ["text"] },
   "Kimi-K2.6":          { contextWindow: 131072, maxTokens: 8192,  reasoning: false, input: ["text"] },
 };
-const FALLBACK = { contextWindow: 128000, maxTokens: 4096, reasoning: false, input: ["text" as const] };
+const FALLBACK: ModelDefaults = { contextWindow: 128000, maxTokens: 4096, reasoning: false, input: ["text"] };
 
-/** Publisher stored on the model object so streamSimple can route */
-const publisherMap = new Map<string, string>();
+/** Per-deployment API route resolved at discovery time */
+type ApiRoute =
+  | { kind: "anthropic-messages" }
+  | { kind: "openai-chat-completions"; tokenLimit: OpenAITokenLimitParam };
+
+const apiRouteMap = new Map<string, ApiRoute>();
+
+/** Infer OpenAI-compat token limit from model name when not explicitly configured */
+function inferOpenAITokenLimit(modelName: string): OpenAITokenLimitParam {
+  if (MODEL_DEFAULTS[modelName]?.openaiTokenLimit) return MODEL_DEFAULTS[modelName].openaiTokenLimit!;
+  // GPT-5 and o-series models reject max_tokens on Azure/OpenAI chat completions
+  if (/^(gpt-5|o[1-9])([-.]|$)/i.test(modelName)) return "max_completion_tokens";
+  return "max_tokens";
+}
+
+function resolveApiRoute(d: Deployment): ApiRoute {
+  if (d.modelPublisher === "Anthropic") return { kind: "anthropic-messages" };
+  const modelName = d.modelName ?? d.name;
+  return { kind: "openai-chat-completions", tokenLimit: inferOpenAITokenLimit(modelName) };
+}
+
+function describeApiRoute(route: ApiRoute): string {
+  if (route.kind === "anthropic-messages") return "anthropic-messages";
+  return `openai-chat-completions (${route.tokenLimit})`;
+}
 
 /** Auth context per-provider, keyed by provider id */
 interface ProviderAuth {
@@ -132,8 +166,9 @@ interface ProviderAuth {
 const providerAuthMap = new Map<string, ProviderAuth>();
 
 function deploymentToModel(d: Deployment) {
-  const defaults = MODEL_DEFAULTS[d.modelName ?? d.name] ?? FALLBACK;
-  if (d.modelPublisher) publisherMap.set(d.name, d.modelPublisher);
+  const modelName = d.modelName ?? d.name;
+  const defaults = MODEL_DEFAULTS[modelName] ?? FALLBACK;
+  apiRouteMap.set(d.name, resolveApiRoute(d));
   return {
     id: d.name,
     name: d.modelName ?? d.name,
@@ -260,13 +295,14 @@ function toAnthropicTools(tools: Tool[]): unknown[] {
 function streamOpenAI(
   model: Model<Api>, context: Context, options: SimpleStreamOptions | undefined,
   output: AssistantMessage, stream: ReturnType<typeof createAssistantMessageEventStream>,
-  baseHost: string, auth: ProviderAuth,
+  baseHost: string, auth: ProviderAuth, route: Extract<ApiRoute, { kind: "openai-chat-completions" }>,
 ): Promise<void> {
   return (async () => {
     const url = `${baseHost}/openai/deployments/${model.id}/chat/completions?api-version=2024-10-21`;
+    const maxOutput = options?.maxTokens ?? model.maxTokens;
     const body: Record<string, unknown> = {
       messages: toOpenAIMessages(context.systemPrompt, context.messages),
-      max_tokens: options?.maxTokens ?? model.maxTokens,
+      [route.tokenLimit]: maxOutput,
       stream: true,
       stream_options: { include_usage: true },
     };
@@ -497,15 +533,15 @@ function streamAzureFoundry(
 
     try {
       const baseHost = new URL(model.baseUrl).origin;
-      const publisher = publisherMap.get(model.id) ?? "";
+      const route = apiRouteMap.get(model.id) ?? { kind: "openai-chat-completions", tokenLimit: "max_tokens" };
       // Resolve auth: use registered provider auth, fall back to api-key from options.
       const auth: ProviderAuth = providerAuthMap.get(model.provider)
         ?? { type: "api-key", getToken: () => Promise.resolve(options?.apiKey ?? "") };
 
-      if (publisher === "Anthropic") {
+      if (route.kind === "anthropic-messages") {
         await streamAnthropic(model, context, options, output, stream, baseHost, auth);
       } else {
-        await streamOpenAI(model, context, options, output, stream, baseHost, auth);
+        await streamOpenAI(model, context, options, output, stream, baseHost, auth, route);
       }
 
       stream.push({ type: "done", reason: output.stopReason as "stop" | "length" | "toolUse", message: output });
@@ -544,8 +580,20 @@ export default async function (pi: ExtensionAPI) {
   const deployments = (data.value ?? []).filter((d) => d.capabilities?.chat_completion === "true");
   if (deployments.length === 0) throw new Error("No chat-capable deployments found");
 
-  const summary = deployments.map((d) => `${d.name} (${d.modelPublisher})`).join(", ");
+  const models = deployments.map(deploymentToModel);
+
+  const summary = deployments.map((d) => {
+    const route = apiRouteMap.get(d.name)!;
+    return `${d.name} (${d.modelPublisher}, ${describeApiRoute(route)})`;
+  }).join(", ");
   console.log(`[Azure Foundry] Found ${deployments.length} deployment(s): ${summary}`);
+
+  for (const d of deployments) {
+    const modelName = d.modelName ?? d.name;
+    if (MODEL_DEFAULTS[modelName]) continue;
+    const route = apiRouteMap.get(d.name)!;
+    console.log(`[Azure Foundry] ${d.name}: no explicit defaults for "${modelName}" — using ${describeApiRoute(route)}`);
+  }
 
   const providerId = "azure-foundry";
   // Store the auth context so streamAzureFoundry can build the right headers per-request.
@@ -560,7 +608,7 @@ export default async function (pi: ExtensionAPI) {
     apiKey: config.auth.type === "api-key" ? config.auth.apiKey : "azure-identity",
     api: "azure-foundry" as Api,
     streamSimple: streamAzureFoundry,
-    models: deployments.map(deploymentToModel),
+    models,
   });
 
   console.log(`[Azure Foundry] ✓ Registered ${deployments.length} model(s)`);

@@ -107,7 +107,7 @@ Your deployments will appear in the pi model picker under the **Azure Foundry** 
 ## How it works
 
 - **Deployment discovery** — on startup the extension calls the Foundry deployments API and filters to chat-capable deployments. No model list to maintain manually.
-- **Routing** — Anthropic deployments are routed to `/anthropic/v1/messages` (native Messages API with tool use and extended thinking). All other deployments use `/openai/deployments/{id}/chat/completions` (OpenAI-compatible).
+- **Routing** — Anthropic deployments are routed to `/anthropic/v1/messages` (native Messages API with tool use and extended thinking). All other deployments use `/openai/deployments/{id}/chat/completions` (OpenAI-compatible). Newer GPT-5/o-series models use `max_completion_tokens` instead of `max_tokens`; this is inferred from model name or set explicitly in `MODEL_DEFAULTS`.
 - **Auth headers** — API key auth sends `api-key: <key>` on the OpenAI route and `Authorization: Bearer <key>` on the Anthropic route. Azure identity sends `Authorization: Bearer <entra-token>` on both. Tokens are cached and refreshed automatically 5 minutes before expiry.
 
 ---
@@ -121,6 +121,7 @@ The extension auto-discovers whatever is deployed in your Foundry project. Known
 | claude-sonnet-4-5 / 4-6 | 200K | 16K | ✅ | ✅ |
 | claude-haiku-4-5 | 200K | 16K | — | ✅ |
 | claude-opus-4-5 | 200K | 32K | ✅ | ✅ |
+| gpt-5.4-nano | 128K | 16K | — | ✅ |
 | gpt-4o | 128K | 4K | — | ✅ |
 | gpt-4o-mini | 128K | 4K | — | ✅ |
 | Kimi-K2.5 / K2.6 | 131K | 8K | — | — |
