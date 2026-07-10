@@ -45,19 +45,15 @@
     "type-check": "tsc --noEmit"
   },
   "devDependencies": {
-    "@earendil-works/pi-ai": "^0.75.5",
-    "@earendil-works/pi-coding-agent": "^0.75.5",
+    "@earendil-works/pi-ai": "^0.80.6",
+    "@earendil-works/pi-coding-agent": "^0.80.6",
     "@types/node": "^20",
     "typescript": "^5"
   },
   "peerDependencies": {
-    "@earendil-works/pi-ai": "*",
     "@earendil-works/pi-coding-agent": "*"
   },
   "peerDependenciesMeta": {
-    "@earendil-works/pi-ai": {
-      "optional": true
-    },
     "@earendil-works/pi-coding-agent": {
       "optional": true
     }
@@ -66,6 +62,7 @@
     "node": ">=18.0.0"
   },
   "dependencies": {
-    "@azure/identity": "^4.13.1"
+    "@azure/identity": "^4.13.1",
+    "@earendil-works/pi-ai": "^0.80.6"
   }
 }

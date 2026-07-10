@@ -107,26 +107,69 @@ Your deployments will appear in the pi model picker under the **Azure Foundry** 
 ## How it works
 
 - **Deployment discovery** — on startup the extension calls the Foundry deployments API and filters to chat-capable deployments. No model list to maintain manually.
-- **Routing** — Anthropic deployments are routed to `/anthropic/v1/messages` (native Messages API with tool use and extended thinking). All other deployments use `/openai/deployments/{id}/chat/completions` (OpenAI-compatible). Newer GPT-5/o-series models use `max_completion_tokens` instead of `max_tokens`; this is inferred from model name or set explicitly in `MODEL_DEFAULTS`.
+- **Metadata resolution** — model details (context window, max output tokens, reasoning support, vision support, and per-token pricing) are resolved by matching the Azure catalog model name against [pi-ai](https://npmjs.com/package/@earendil-works/pi-ai)'s built-in model providers. The match is case-insensitive, so `Kimi-K2.7-Code` resolves to pi-ai's `kimi-k2.7-code`.
+- **Config overrides** — you can pin or override details for any catalog model via the optional `models` property in `azure-foundry.config.json`. This takes precedence over the pi-ai catalog lookup and is useful for custom deployments, negotiated pricing, or models not yet in pi-ai. See the example below.
+- **Routing** — Anthropic deployments are routed to `/anthropic/v1/messages` (native Messages API with tool use and extended thinking). All other deployments use `/openai/deployments/{id}/chat/completions` (OpenAI-compatible). Newer GPT-5/o-series models use `max_completion_tokens` instead of `max_tokens`; this is inferred from model name or set explicitly in `models` config overrides.
 - **Auth headers** — API key auth sends `api-key: <key>` on the OpenAI route and `Authorization: Bearer <key>` on the Anthropic route. Azure identity sends `Authorization: Bearer <entra-token>` on both. Tokens are cached and refreshed automatically 5 minutes before expiry.
 
 ---
 
 ## Supported models
 
-The extension auto-discovers whatever is deployed in your Foundry project. Known model capabilities are pre-configured for:
+The extension auto-discovers whatever is deployed in your Foundry project. Known models are resolved through [pi-ai](https://npmjs.com/package/@earendil-works/pi-ai)'s built-in provider catalogs (Anthropic, OpenAI, MoonshotAI, Mistral, DeepSeek, xAI, and their regional variants).
 
-| Model | Context | Max output | Reasoning | Vision |
-|---|---|---|---|---|
-| claude-sonnet-4-5 / 4-6 | 200K | 16K | ✅ | ✅ |
-| claude-haiku-4-5 | 200K | 16K | — | ✅ |
-| claude-opus-4-5 | 200K | 32K | ✅ | ✅ |
-| gpt-5.4-nano | 128K | 16K | — | ✅ |
-| gpt-4o | 128K | 4K | — | ✅ |
-| gpt-4o-mini | 128K | 4K | — | ✅ |
-| Kimi-K2.5 / K2.6 | 131K | 8K | — | — |
+Any deployment whose catalog model name can't be matched falls back to conservative defaults (128K context / 4K output / text-only / no reasoning / no cost). To override or plug a gap, add an entry under the `models` key in `azure-foundry.config.json`.
 
-Any deployment not in the above list falls back to 128K context / 4K output / text-only.
+### Overriding model details
+
+The `models` section lets you override any subset of the resolved metadata for a specific Azure catalog model. The key must match the **Azure model name** exactly (e.g. `Kimi-K2.7-Code`). Any omitted fields are kept from the pi-ai catalog or fallback defaults.
+
+```json
+{
+  "resourceId": "my-resource-eastus2",
+  "projectId": "my-project-eastus2",
+  "auth": {
+    "type": "api-key",
+    "apiKey": "your-api-key-here"
+  },
+  "models": {
+    "Kimi-K2.7-Code": {
+      "contextWindow": 262144,
+      "maxTokens": 32768,
+      "reasoning": true,
+      "input": ["text", "image"],
+      "cost": {
+        "input": 0.95,
+        "output": 4.0,
+        "cacheRead": 0.19,
+        "cacheWrite": 0
+      },
+      "openaiTokenLimit": "max_tokens"
+    }
+  }
+}
+```
+
+Supported override fields:
+
+| Field | Type | Purpose |
+|---|---|---|
+| `contextWindow` | number | Model context window in tokens |
+| `maxTokens` | number | Maximum output tokens per request |
+| `reasoning` | boolean | Whether the model emits reasoning/thinking content |
+| `input` | `["text"]`, `["text", "image"]`, etc. | Supported input modalities |
+| `cost` | `{ input, output, cacheRead?, cacheWrite? }` | Per-1M-token pricing in USD |
+| `openaiTokenLimit` | `"max_tokens"` or `"max_completion_tokens"` | Which field pi sends for the output token limit |
+
+Common use-cases include fixing stale data in the `pi-ai` catalog, setting custom parameters configured in Foundry (e.g. `maxTokens`), or ensuring cost estimates reflect special pricing from a negotiated arrangement with Microsoft Azure.
+
+```json
+"models": {
+  "Kimi-K2.7-Code": {
+    "maxTokens": 32768
+  }
+}
+```
 
 ---
 

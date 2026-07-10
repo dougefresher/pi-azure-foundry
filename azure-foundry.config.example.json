@@ -4,5 +4,20 @@
   "auth": {
     "type": "api-key",
     "apiKey": "your-api-key-here"
+  },
+  "models": {
+    "Kimi-K2.7-Code": {
+      "contextWindow": 262144,
+      "maxTokens": 32768,
+      "reasoning": true,
+      "input": ["text", "image"],
+      "cost": {
+        "input": 0.95,
+        "output": 4,
+        "cacheRead": 0.19,
+        "cacheWrite": 0
+      },
+      "openaiTokenLimit": "max_tokens"
+    }
   }
 }

@@ -22,9 +22,21 @@ import {
   type ImageContent,
   type ThinkingContent,
   type ToolResultMessage,
+  type ModelCost,
   calculateCost,
   createAssistantMessageEventStream,
 } from "@earendil-works/pi-ai";
+import { ANTHROPIC_MODELS } from "@earendil-works/pi-ai/providers/anthropic.models";
+import { OPENAI_MODELS } from "@earendil-works/pi-ai/providers/openai.models";
+import { MISTRAL_MODELS } from "@earendil-works/pi-ai/providers/mistral.models";
+import { FIREWORKS_MODELS } from "@earendil-works/pi-ai/providers/fireworks.models";
+import { HUGGINGFACE_MODELS } from "@earendil-works/pi-ai/providers/huggingface.models";
+import { ZAI_MODELS } from "@earendil-works/pi-ai/providers/zai.models";
+import { MINIMAX_MODELS } from "@earendil-works/pi-ai/providers/minimax.models";
+import { DEEPSEEK_MODELS } from "@earendil-works/pi-ai/providers/deepseek.models";
+import { XAI_MODELS } from "@earendil-works/pi-ai/providers/xai.models";
+import { MOONSHOTAI_MODELS } from "@earendil-works/pi-ai/providers/moonshotai.models";
+import { MOONSHOTAI_CN_MODELS } from "@earendil-works/pi-ai/providers/moonshotai-cn.models";
 import { readFileSync, existsSync } from "node:fs";
 import { resolve } from "node:path";
 import { homedir } from "node:os";
@@ -38,10 +50,22 @@ type AuthConfig =
   | { type: "api-key"; apiKey: string }
   | { type: "azure-identity" };
 
+type OpenAITokenLimitParam = "max_tokens" | "max_completion_tokens";
+
+interface ModelConfigOverride {
+  contextWindow?: number;
+  maxTokens?: number;
+  reasoning?: boolean;
+  input?: ("text" | "image")[];
+  cost?: ModelCost;
+  openaiTokenLimit?: OpenAITokenLimitParam;
+}
+
 interface Config {
   resourceId: string;
   projectId: string;
   auth: AuthConfig;
+  models?: Record<string, ModelConfigOverride>;
 }
 
 // =============================================================================
@@ -108,29 +132,106 @@ function loadConfig(): Config {
 // Deployment → Model mapping
 // =============================================================================
 
-type OpenAITokenLimitParam = "max_tokens" | "max_completion_tokens";
-
-interface ModelDefaults {
+interface ResolvedModelDetails {
   contextWindow: number;
   maxTokens: number;
   reasoning: boolean;
   input: ("text" | "image")[];
-  /** OpenAI-compat token limit field; newer GPT-5/o-series models require max_completion_tokens */
+  cost: ModelCost;
+  thinkingLevelMap?: Model<Api>["thinkingLevelMap"];
   openaiTokenLimit?: OpenAITokenLimitParam;
+  source: "config" | "catalog" | "fallback";
 }
 
-const MODEL_DEFAULTS: Record<string, ModelDefaults> = {
-  "claude-sonnet-4-5":  { contextWindow: 200000, maxTokens: 16384, reasoning: true,  input: ["text", "image"] },
-  "claude-sonnet-4-6":  { contextWindow: 200000, maxTokens: 16384, reasoning: true,  input: ["text", "image"] },
-  "claude-haiku-4-5":   { contextWindow: 200000, maxTokens: 16384, reasoning: false, input: ["text", "image"] },
-  "claude-opus-4-5":    { contextWindow: 200000, maxTokens: 32000, reasoning: true,  input: ["text", "image"] },
-  "gpt-5.4-nano":       { contextWindow: 128000, maxTokens: 16384, reasoning: false, input: ["text", "image"], openaiTokenLimit: "max_completion_tokens" },
-  "gpt-4o":             { contextWindow: 128000, maxTokens: 4096,  reasoning: false, input: ["text", "image"] },
-  "gpt-4o-mini":        { contextWindow: 128000, maxTokens: 4096,  reasoning: false, input: ["text", "image"] },
-  "Kimi-K2.5":          { contextWindow: 131072, maxTokens: 8192,  reasoning: false, input: ["text"] },
-  "Kimi-K2.6":          { contextWindow: 131072, maxTokens: 8192,  reasoning: false, input: ["text"] },
+const ZERO_COST: ModelCost = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 };
+
+const FALLBACK: ResolvedModelDetails = {
+  contextWindow: 128000,
+  maxTokens: 4096,
+  reasoning: false,
+  input: ["text"],
+  cost: ZERO_COST,
+  source: "fallback",
 };
-const FALLBACK: ModelDefaults = { contextWindow: 128000, maxTokens: 4096, reasoning: false, input: ["text"] };
+
+/** Lower-case a model/catalog name so Azure and pi-ai ids can be matched. */
+function normalizeModelName(name: string): string {
+  return name.toLowerCase();
+}
+
+/** Build a map from normalized model id to pi-ai's built-in model metadata. */
+function buildKnownModelCatalog(): Map<string, Model<Api>> {
+  const catalog = new Map<string, Model<Api>>();
+  const providerCatalogs = [
+    ANTHROPIC_MODELS,
+    OPENAI_MODELS,
+    MISTRAL_MODELS,
+    FIREWORKS_MODELS,
+    HUGGINGFACE_MODELS,
+    ZAI_MODELS,
+    MINIMAX_MODELS,
+    DEEPSEEK_MODELS,
+    XAI_MODELS,
+    MOONSHOTAI_MODELS,
+    MOONSHOTAI_CN_MODELS,
+  ];
+  for (const models of providerCatalogs) {
+    for (const model of Object.values(models)) {
+      const key = normalizeModelName(model.id);
+      if (catalog.has(key)) continue;
+      catalog.set(key, model as Model<Api>);
+    }
+  }
+  return catalog;
+}
+
+/**
+ * Resolve model details in precedence order:
+ *   1. User override in azure-foundry.config.json (exact Azure modelName)
+ *   2. pi-ai built-in model catalog (normalized id match)
+ *   3. Conservative fallback defaults
+ */
+function resolveModelDetails(
+  modelName: string,
+  catalog: Map<string, Model<Api>>,
+  overrides: Record<string, ModelConfigOverride> | undefined,
+): ResolvedModelDetails {
+  const override = overrides?.[modelName];
+  const catalogModel = catalog.get(normalizeModelName(modelName));
+
+  // Start with catalog metadata, or the conservative fallback if unknown.
+  const base: ResolvedModelDetails = catalogModel
+    ? (() => {
+        const compatMaxTokensField = (catalogModel as any).compat?.maxTokensField;
+        return {
+          contextWindow: catalogModel.contextWindow,
+          maxTokens: catalogModel.maxTokens,
+          reasoning: catalogModel.reasoning,
+          input: catalogModel.input,
+          cost: catalogModel.cost,
+          thinkingLevelMap: catalogModel.thinkingLevelMap,
+          openaiTokenLimit:
+            compatMaxTokensField === "max_tokens" || compatMaxTokensField === "max_completion_tokens"
+              ? compatMaxTokensField
+              : undefined,
+          source: "catalog",
+        };
+      })()
+    : FALLBACK;
+
+  if (!override) return base;
+
+  // Apply only the override keys that are present.
+  return {
+    ...base,
+    ...override,
+    cost: {
+      ...base.cost,
+      ...override.cost // spreading undefined in JS is fine
+    },
+    source: "config",
+  };
+}
 
 /** Per-deployment API route resolved at discovery time */
 type ApiRoute =
@@ -139,18 +240,18 @@ type ApiRoute =
 
 const apiRouteMap = new Map<string, ApiRoute>();
 
-/** Infer OpenAI-compat token limit from model name when not explicitly configured */
-function inferOpenAITokenLimit(modelName: string): OpenAITokenLimitParam {
-  if (MODEL_DEFAULTS[modelName]?.openaiTokenLimit) return MODEL_DEFAULTS[modelName].openaiTokenLimit!;
+/** Infer OpenAI-compat token limit from resolved metadata or model name patterns. */
+function inferOpenAITokenLimit(modelName: string, resolved: ResolvedModelDetails): OpenAITokenLimitParam {
+  if (resolved.openaiTokenLimit) return resolved.openaiTokenLimit;
   // GPT-5 and o-series models reject max_tokens on Azure/OpenAI chat completions
   if (/^(gpt-5|o[1-9])([-.]|$)/i.test(modelName)) return "max_completion_tokens";
   return "max_tokens";
 }
 
-function resolveApiRoute(d: Deployment): ApiRoute {
+function resolveApiRoute(d: Deployment, resolved: ResolvedModelDetails): ApiRoute {
   if (d.modelPublisher === "Anthropic") return { kind: "anthropic-messages" };
   const modelName = d.modelName ?? d.name;
-  return { kind: "openai-chat-completions", tokenLimit: inferOpenAITokenLimit(modelName) };
+  return { kind: "openai-chat-completions", tokenLimit: inferOpenAITokenLimit(modelName, resolved) };
 }
 
 function describeApiRoute(route: ApiRoute): string {
@@ -165,19 +266,33 @@ interface ProviderAuth {
 }
 const providerAuthMap = new Map<string, ProviderAuth>();
 
-function deploymentToModel(d: Deployment) {
+function deploymentToModel(
+  d: Deployment,
+  catalog: Map<string, Model<Api>>,
+  overrides: Record<string, ModelConfigOverride> | undefined,
+) {
   const modelName = d.modelName ?? d.name;
-  const defaults = MODEL_DEFAULTS[modelName] ?? FALLBACK;
-  apiRouteMap.set(d.name, resolveApiRoute(d));
-  return {
+  const details = resolveModelDetails(modelName, catalog, overrides);
+  apiRouteMap.set(d.name, resolveApiRoute(d, details));
+
+  const model = {
     id: d.name,
-    name: d.modelName ?? d.name,
-    reasoning: defaults.reasoning,
-    input: defaults.input,
-    cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-    contextWindow: defaults.contextWindow,
-    maxTokens: defaults.maxTokens,
+    name: modelName,
+    reasoning: details.reasoning,
+    input: details.input,
+    cost: details.cost,
+    contextWindow: details.contextWindow,
+    maxTokens: details.maxTokens,
+    thinkingLevelMap: details.thinkingLevelMap,
   };
+
+  if (details.source === "fallback") {
+    console.log(`[Azure Foundry] ${d.name}: no metadata for "${modelName}" — using fallback defaults`);
+  } else if (details.source === "config") {
+    console.log(`[Azure Foundry] ${d.name}: using config override for "${modelName}"`);
+  }
+
+  return model;
 }
 
 // =============================================================================
@@ -580,20 +695,14 @@ export default async function (pi: ExtensionAPI) {
   const deployments = (data.value ?? []).filter((d) => d.capabilities?.chat_completion === "true");
   if (deployments.length === 0) throw new Error("No chat-capable deployments found");
 
-  const models = deployments.map(deploymentToModel);
+  const catalog = buildKnownModelCatalog();
+  const models = deployments.map((d) => deploymentToModel(d, catalog, config.models));
 
   const summary = deployments.map((d) => {
     const route = apiRouteMap.get(d.name)!;
     return `${d.name} (${d.modelPublisher}, ${describeApiRoute(route)})`;
   }).join(", ");
   console.log(`[Azure Foundry] Found ${deployments.length} deployment(s): ${summary}`);
-
-  for (const d of deployments) {
-    const modelName = d.modelName ?? d.name;
-    if (MODEL_DEFAULTS[modelName]) continue;
-    const route = apiRouteMap.get(d.name)!;
-    console.log(`[Azure Foundry] ${d.name}: no explicit defaults for "${modelName}" — using ${describeApiRoute(route)}`);
-  }
 
   const providerId = "azure-foundry";
   // Store the auth context so streamAzureFoundry can build the right headers per-request.
