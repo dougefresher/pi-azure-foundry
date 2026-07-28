@@ -38,6 +38,7 @@
     ]
   },
   "scripts": {
+    "check": "biome check --write --error-on-warnings . && tsc --noEmit",
     "build": "tsc",
     "dev": "tsc --watch",
     "clean": "rm -rf dist",
@@ -45,15 +46,20 @@
     "type-check": "tsc --noEmit"
   },
   "devDependencies": {
-    "@earendil-works/pi-ai": "^0.80.6",
-    "@earendil-works/pi-coding-agent": "^0.80.6",
-    "@types/node": "^20",
-    "typescript": "^5"
+    "@earendil-works/pi-ai": "^0.82.0",
+    "@earendil-works/pi-coding-agent": "^0.82.0",
+    "@types/node": "^24",
+    "@biomejs/biome": "^2.5.6",
+    "typescript": "^7"
   },
   "peerDependencies": {
+    "@earendil-works/pi-ai": "*",
     "@earendil-works/pi-coding-agent": "*"
   },
   "peerDependenciesMeta": {
+    "@earendil-works/pi-ai": {
+      "optional": true
+    },
     "@earendil-works/pi-coding-agent": {
       "optional": true
     }
@@ -62,7 +68,9 @@
     "node": ">=18.0.0"
   },
   "dependencies": {
-    "@azure/identity": "^4.13.1",
-    "@earendil-works/pi-ai": "^0.80.6"
-  }
+    "@azure/identity": "^4.13.1"
+  },
+  "bundleDependencies": [
+    "@azure/identity"
+  ]
 }
