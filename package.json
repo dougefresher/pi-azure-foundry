@@ -1,6 +1,6 @@
 {
   "name": "@dougEfresh/pi-azure-foundry",
-  "version": "1.0.4",
+  "version": "1.0.5",
   "description": "Pi extension for Azure AI Foundry — discovers deployments and registers models",
   "type": "module",
   "main": "./dist/index.js",
@@ -9,7 +9,7 @@
   },
   "repository": {
     "type": "git",
-    "url": "https://github.com/nquandt/pi-azure-foundry.git"
+    "url": "https://github.com/dougefresher/pi-azure-foundry.git"
   },
   "keywords": [
     "pi",
@@ -19,7 +19,7 @@
     "ai",
     "provider"
   ],
-  "author": "Nicholas Quandt",
+  "author": "dougefresh",
   "license": "MIT",
   "publishConfig": {
     "access": "public"
@@ -46,11 +46,11 @@
     "type-check": "tsc --noEmit"
   },
   "devDependencies": {
-    "@earendil-works/pi-ai": "^0.82.0",
-    "@earendil-works/pi-coding-agent": "^0.82.0",
-    "@types/node": "^24",
+    "@earendil-works/pi-ai": "^0.82.1",
+    "@earendil-works/pi-coding-agent": "^0.82.1",
+    "@types/node": "^24.13.3",
     "@biomejs/biome": "^2.5.6",
-    "typescript": "^7"
+    "typescript": "^7.0.2"
   },
   "peerDependencies": {
     "@earendil-works/pi-ai": "*",
@@ -65,7 +65,7 @@
     }
   },
   "engines": {
-    "node": ">=18.0.0"
+    "node": ">=24.0.0"
   },
   "dependencies": {
     "@azure/identity": "^4.13.1"

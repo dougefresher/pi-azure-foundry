@@ -5,6 +5,10 @@
     "type": "api-key",
     "apiKey": "your-api-key-here"
   },
+  "retry": {
+    "maxRetries": 4,
+    "maxRetryDelayMs": 60000
+  },
   "models": {
     "Kimi-K2.7-Code": {
       "contextWindow": 262144,

@@ -50,11 +50,17 @@ interface ModelConfigOverride {
   openaiTokenLimit?: OpenAITokenLimitParam;
 }
 
+interface RetryConfig {
+  maxRetries?: number;
+  maxRetryDelayMs?: number;
+}
+
 interface Config {
   resourceId: string;
   projectId: string;
   auth: AuthConfig;
   models?: Record<string, ModelConfigOverride>;
+  retry?: RetryConfig;
 }
 
 // =============================================================================
@@ -272,6 +278,107 @@ function deploymentToModel(
 }
 
 // =============================================================================
+// Retry / backoff for transient errors (429 throttling, 5xx)
+// =============================================================================
+
+/** Throttling (429), conflict/timeout, and transient upstream failures. */
+const RETRYABLE_STATUS = new Set([408, 409, 429, 500, 502, 503, 504]);
+let retryConfig: Required<RetryConfig> = { maxRetries: 4, maxRetryDelayMs: 60_000 };
+class AbortError extends Error {
+  constructor() {
+    super('Request aborted');
+    this.name = 'AbortError';
+  }
+}
+
+function abortableSleep(ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(new AbortError());
+      return;
+    }
+    const onAbort = () => {
+      clearTimeout(timer);
+      reject(new AbortError());
+    };
+    const timer = setTimeout(
+      () => {
+        signal?.removeEventListener('abort', onAbort);
+        resolve();
+      },
+      Math.max(0, ms),
+    );
+    signal?.addEventListener('abort', onAbort, { once: true });
+  });
+}
+
+function clampRetryDelay(delayMs: number): number {
+  const max = retryConfig.maxRetryDelayMs;
+  if (max > 0 && delayMs > max) {
+    throw new Error(
+      `Azure Foundry: server requested ${Math.ceil(delayMs / 1000)}s retry delay (max ${Math.ceil(max / 1000)}s)`,
+    );
+  }
+  return Math.max(0, delayMs);
+}
+
+/**
+ * Delay before the next attempt. Prefers the server's back-pressure hint
+ * (`retry-after-ms`, then `retry-after` as seconds or an HTTP date); otherwise
+ * decorrelated exponential backoff (0.5·2^attempt s, capped at 8s) with ~25%
+ * jitter. Honoring Retry-After is the whole point — the coding-agent's outer
+ * retry loop can't see this header, only the error string.
+ */
+function retryDelayMs(headers: Headers, attempt: number): number {
+  const afterMs = headers.get('retry-after-ms');
+  if (afterMs) {
+    const v = Number.parseFloat(afterMs);
+    if (!Number.isNaN(v)) return clampRetryDelay(v);
+  }
+  const after = headers.get('retry-after');
+  if (after) {
+    const secs = Number.parseFloat(after);
+    const v = Number.isNaN(secs) ? Date.parse(after) - Date.now() : secs * 1000;
+    return clampRetryDelay(v);
+  }
+  const expo = Math.min(0.5 * 2 ** attempt, 8) * 1000;
+  return expo * (1 - Math.random() * 0.25);
+}
+
+/**
+ * POST with bounded retry on 429/5xx. `buildInit` runs fresh per attempt so the
+ * auth token is re-fetched — important when a long Retry-After outlives the
+ * cached Entra token. Retries only happen BEFORE the response body streams, so
+ * no partial output is ever discarded. Returns the first OK response; on
+ * exhaustion throws `Azure Foundry <status>: <body>` (status preserved so the
+ * outer session-level classifier can still catch genuine exhaustion).
+ */
+async function fetchWithRetry(
+  url: string,
+  buildInit: () => Promise<RequestInit>,
+  signal?: AbortSignal,
+): Promise<Response> {
+  let attempt = 0;
+  for (;;) {
+    if (signal?.aborted) throw new AbortError();
+    const response = await fetch(url, await buildInit());
+    if (response.ok) return response;
+
+    const body = await response.text().catch(() => '');
+    if (attempt >= retryConfig.maxRetries || !RETRYABLE_STATUS.has(response.status)) {
+      throw new Error(`Azure Foundry ${response.status}: ${body.slice(0, 500)}`);
+    }
+    // clampRetryDelay may throw on an over-long Retry-After; surface it verbatim.
+    const delay = retryDelayMs(response.headers, attempt);
+    console.log(
+      `[Azure Foundry] ${response.status} — retry ${attempt + 1}/${retryConfig.maxRetries} in ${Math.round(delay)}ms: ${body.slice(0, 160)}`,
+    );
+    await abortableSleep(delay, signal);
+    attempt++;
+  }
+}
+
+// =============================================================================
 // SSE Stream Parser
 // =============================================================================
 
@@ -459,21 +566,24 @@ function streamOpenAI(
     if (options?.temperature !== undefined) body.temperature = options.temperature;
     if (context.tools?.length) body.tools = toOpenAITools(context.tools);
 
-    const token = await auth.getToken();
-    // OpenAI-compat route: api-key auth uses the "api-key" header;
-    // Entra ID (azure-identity) uses "Authorization: Bearer".
-    const authHeaders: Record<string, string> =
-      auth.type === 'api-key' ? { 'api-key': token } : { Authorization: `Bearer ${token}` };
-    const response = await fetch(url, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', ...authHeaders },
-      body: JSON.stringify(body),
-      signal: options?.signal,
-    });
-    if (!response.ok) {
-      const t = await response.text().catch(() => '');
-      throw new Error(`Azure Foundry ${response.status}: ${t.slice(0, 500)}`);
-    }
+    const payload = JSON.stringify(body);
+    const response = await fetchWithRetry(
+      url,
+      async () => {
+        const token = await auth.getToken();
+        // OpenAI-compat route: api-key auth uses the "api-key" header;
+        // Entra ID (azure-identity) uses "Authorization: Bearer".
+        const authHeaders: Record<string, string> =
+          auth.type === 'api-key' ? { 'api-key': token } : { Authorization: `Bearer ${token}` };
+        return {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', ...authHeaders },
+          body: payload,
+          signal: options?.signal,
+        };
+      },
+      options?.signal,
+    );
     if (!response.body) throw new Error('No response body');
 
     stream.push({ type: 'start', partial: output });
@@ -596,23 +706,26 @@ function streamAnthropic(
     if (context.systemPrompt) body.system = context.systemPrompt;
     if (context.tools?.length) body.tools = toAnthropicTools(context.tools);
 
-    const token = await auth.getToken();
-    // Anthropic route on Azure Foundry always uses "Authorization: Bearer"
-    // regardless of auth type — api-key values are valid Bearer tokens here.
-    const response = await fetch(url, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        Authorization: `Bearer ${token}`,
-        'anthropic-version': '2023-06-01',
+    const payload = JSON.stringify(body);
+    const response = await fetchWithRetry(
+      url,
+      async () => {
+        const token = await auth.getToken();
+        // Anthropic route on Azure Foundry always uses "Authorization: Bearer"
+        // regardless of auth type — api-key values are valid Bearer tokens here.
+        return {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            Authorization: `Bearer ${token}`,
+            'anthropic-version': '2023-06-01',
+          },
+          body: payload,
+          signal: options?.signal,
+        };
       },
-      body: JSON.stringify(body),
-      signal: options?.signal,
-    });
-    if (!response.ok) {
-      const t = await response.text().catch(() => '');
-      throw new Error(`Azure Foundry ${response.status}: ${t.slice(0, 500)}`);
-    }
+      options?.signal,
+    );
     if (!response.body) throw new Error('No response body');
 
     stream.push({ type: 'start', partial: output });
@@ -789,6 +902,15 @@ function streamAzureFoundry(
 
 export default async function (pi: ExtensionAPI) {
   const config = loadConfig();
+  if (config.retry) {
+    retryConfig = {
+      maxRetries: config.retry.maxRetries ?? retryConfig.maxRetries,
+      maxRetryDelayMs: config.retry.maxRetryDelayMs ?? retryConfig.maxRetryDelayMs,
+    };
+  }
+  console.log(
+    `[Azure Foundry] Retry: ${retryConfig.maxRetries} attempts, ${Math.round(retryConfig.maxRetryDelayMs / 1000)}s Retry-After cap`,
+  );
   const endpoint = `https://${config.resourceId}.services.ai.azure.com/api/projects/${config.projectId}`;
 
   // Discover deployments

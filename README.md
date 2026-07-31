@@ -111,6 +111,18 @@ Your deployments will appear in the pi model picker under the **Azure Foundry** 
 - **Config overrides** — you can pin or override details for any catalog model via the optional `models` property in `azure-foundry.config.json`. This takes precedence over the pi-ai catalog lookup and is useful for custom deployments, negotiated pricing, or models not yet in pi-ai. See the example below.
 - **Routing** — Anthropic deployments are routed to `/anthropic/v1/messages` (native Messages API with tool use and extended thinking). All other deployments use `/openai/deployments/{id}/chat/completions` (OpenAI-compatible). Newer GPT-5/o-series models use `max_completion_tokens` instead of `max_tokens`; this is inferred from model name or set explicitly in `models` config overrides.
 - **Auth headers** — API key auth sends `api-key: <key>` on the OpenAI route and `Authorization: Bearer <key>` on the Anthropic route. Azure identity sends `Authorization: Bearer <entra-token>` on both. Tokens are cached and refreshed automatically 5 minutes before expiry.
+- **Retry / backoff** — transient failures (`429 RateLimitReached`, `408/409`, `5xx`) are retried before any output streams, so no partial response is discarded. When Azure returns a `Retry-After` / `retry-after-ms` header the extension honors it exactly; otherwise it falls back to exponential backoff with jitter. A server-requested delay longer than `maxRetryDelayMs` fails fast rather than blocking the agent. Tune via the optional `retry` config below (defaults: 4 attempts, 60s cap). This is separate from — and complementary to — pi's own turn-level retry, which can only see the error text, not the `Retry-After` header.
+
+### Retry config
+
+```jsonc
+{
+  "retry": {
+    "maxRetries": 4,        // attempts on 429/5xx; the initial call is not counted (default 4)
+    "maxRetryDelayMs": 60000 // cap on a server-requested Retry-After wait; 0 disables the cap (default 60000)
+  }
+}
+```
 
 ---
 
