@@ -6,23 +6,33 @@ Supports both **API key** and **Azure identity** (Managed Identity, Azure CLI, s
 
 ## Requirements
 
-- A pi installation (`npm install -g @earendil-works/pi-coding-agent`)
+- A pi installation
 - An Azure AI Foundry project with one or more chat-capable deployments
 
 ---
 
-## Installation
+## Install
 
-### Global (works in any project)
+### Option 1: Install as a pi package from git
 
 ```bash
-pi install npm:@nquandt/pi-azure-foundry
+pi install git:github.com/dougefresher/pi-azure-foundry
 ```
 
-### Try without installing
+Or add it to `~/.pi/agent/settings.json`:
+
+```json
+{
+  "packages": [
+    "git:github.com/dougefresher/pi-azure-foundry"
+  ]
+}
+```
+
+### Option 2: Try without installing
 
 ```bash
-pi -e npm:@nquandt/pi-azure-foundry
+pi -e git:github.com/dougefresher/pi-azure-foundry
 ```
 
 ---
@@ -188,9 +198,8 @@ Common use-cases include fixing stale data in the `pi-ai` catalog, setting custo
 ## Development
 
 ```bash
-git clone https://github.com/nquandt/pi-azure-foundry
+git clone https://github.com/dougefresher/pi-azure-foundry
 cd pi-azure-foundry
-npm install
 npm run build
 
 # Test against your own config
