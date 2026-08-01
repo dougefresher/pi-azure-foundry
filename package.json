@@ -1,6 +1,6 @@
 {
   "name": "@dougEfresh/pi-azure-foundry",
-  "version": "1.0.6",
+  "version": "1.0.7",
   "description": "Pi extension for Azure AI Foundry — discovers deployments and registers models",
   "type": "module",
   "main": "./dist/index.js",
@@ -40,6 +40,7 @@
   "scripts": {
     "check": "biome check --write --error-on-warnings . && tsc --noEmit",
     "build": "tsc",
+    "prepare": "npm run build",
     "dev": "tsc --watch",
     "clean": "rm -rf dist",
     "prebuild": "npm run clean",
