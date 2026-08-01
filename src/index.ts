@@ -443,8 +443,11 @@ function toOpenAIMessages(systemPrompt: string | undefined, messages: Message[])
           type: 'function',
           function: { name: (b as any).name, arguments: JSON.stringify((b as any).arguments) },
         }));
-      if (text) entry.content = text;
       if (tcs.length) entry.tool_calls = tcs;
+      // OpenAI requires `content` to be a string on assistant messages; it may be
+      // null only when tool_calls is present. A turn that reduced to no text and
+      // no tool calls (e.g. a thinking-only turn) must still send content: "".
+      entry.content = text ? text : tcs.length ? null : '';
       out.push(entry);
     } else if (msg.role === 'toolResult') {
       const m = msg as ToolResultMessage;

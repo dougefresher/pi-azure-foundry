@@ -19,6 +19,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `temperature` from options is now forwarded to both OpenAI and Anthropic API requests.
 - CHANGELOG format fixed (was literal `\n` escapes instead of actual newlines).
 
+## [1.0.6] - 2026-08-01
+
+### Fixed
+- OpenAI-compat route no longer sends assistant messages with a missing/null `content`. A turn that reduced to no text and no tool calls (e.g. a thinking-only turn in history) now serializes `content: ""`, fixing `400 invalid_request_error: expected a string, got null` from strict OpenAI/GPT deployments.
+
 ## [1.0.0] - 2025-05-22
 
 ### Added
