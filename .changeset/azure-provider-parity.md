@@ -43,5 +43,7 @@ Added:
   the OpenAI route, nested in `tool_result` content on the Anthropic route.
 - `openaiApiVersion` config key for resources that need a non-default api-version.
 - A `bun test` suite covering the conversion failure matrix.
-- An ad-hoc live smoke test (`bun run smoke`) that exercises the remote
-  assumptions offline tests cannot reach.
+- An ad-hoc live smoke test (`bun run smoke`, or `bun run smoke-test` to run the
+  cases concurrently) that exercises the remote assumptions offline tests cannot
+  reach. It is a `bun:test` file kept outside `[test] root` in bunfig.toml, so
+  plain `bun test` stays offline and free.
