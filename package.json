@@ -38,6 +38,7 @@
     ]
   },
   "scripts": {
+    "test": "bun test",
     "check": "biome check --write --error-on-warnings . && tsc --noEmit",
     "changeset": "changeset",
     "changeset:version": "changeset version",
