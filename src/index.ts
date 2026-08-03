@@ -30,6 +30,7 @@ import {
   type Tool,
   type ToolResultMessage,
 } from '@earendil-works/pi-ai';
+import { transformMessages } from '@earendil-works/pi-ai/api/transform-messages';
 import { getBuiltinModels, getBuiltinProviders } from '@earendil-works/pi-ai/providers/all';
 import type { ExtensionAPI } from '@earendil-works/pi-coding-agent';
 
@@ -406,9 +407,15 @@ async function* parseSSE(reader: ReadableStreamDefaultReader<Uint8Array>): Async
 // OpenAI-format message conversion  (for OpenAI / MoonshotAI / etc.)
 // =============================================================================
 
-function toOpenAIMessages(systemPrompt: string | undefined, messages: Message[]): unknown[] {
+function toOpenAIMessages(model: Model<Api>, systemPrompt: string | undefined, rawMessages: Message[]): unknown[] {
   const out: unknown[] = [];
   if (systemPrompt) out.push({ role: 'system', content: systemPrompt });
+
+  // pi-ai's normalization pass: drops aborted/errored assistant turns and inserts
+  // synthetic tool results for orphaned tool calls. Without it, an interrupted turn
+  // leaves an assistant `tool_calls` with no matching `tool` message and OpenAI
+  // rejects the whole request with "tool_call_ids did not have response messages".
+  const messages = transformMessages(rawMessages, model);
 
   for (let i = 0; i < messages.length; i++) {
     const msg = messages[i];
@@ -475,8 +482,11 @@ function toOpenAITools(tools: Tool[]): unknown[] {
 // Anthropic-format message conversion
 // =============================================================================
 
-function toAnthropicMessages(messages: Message[]): unknown[] {
+function toAnthropicMessages(model: Model<Api>, rawMessages: Message[]): unknown[] {
   const out: unknown[] = [];
+  // Same normalization as the OpenAI route — Anthropic is equally strict about a
+  // `tool_use` block with no matching `tool_result`.
+  const messages = transformMessages(rawMessages, model);
   for (let i = 0; i < messages.length; i++) {
     const msg = messages[i];
     if (msg.role === 'user') {
@@ -561,7 +571,7 @@ function streamOpenAI(
     const url = `${baseHost}/openai/deployments/${model.id}/chat/completions?api-version=2024-10-21`;
     const maxOutput = options?.maxTokens ?? model.maxTokens;
     const body: Record<string, unknown> = {
-      messages: toOpenAIMessages(context.systemPrompt, context.messages),
+      messages: toOpenAIMessages(model, context.systemPrompt, context.messages),
       [route.tokenLimit]: maxOutput,
       stream: true,
       stream_options: { include_usage: true },
@@ -701,7 +711,7 @@ function streamAnthropic(
     const url = `${baseHost}/anthropic/v1/messages`;
     const body: Record<string, unknown> = {
       model: model.id,
-      messages: toAnthropicMessages(context.messages),
+      messages: toAnthropicMessages(model, context.messages),
       max_tokens: options?.maxTokens ?? model.maxTokens,
       stream: true,
     };

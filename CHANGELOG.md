@@ -7,11 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [1.1.0] - 2026-08-03
+
 ### Changed
+- Both message converters now run `context.messages` through pi-ai's `transformMessages()` before serialization, so the extension inherits upstream's history normalization instead of hand-rolling it.
+- Bumped `@earendil-works/pi-ai` and `@earendil-works/pi-coding-agent` to `^0.83.0`.
 - Model metadata is now resolved from pi-ai's built-in provider catalogs instead of a hardcoded MODEL_DEFAULTS table. Unknown models fall back to conservative defaults (128K context / 4K output / text-only / zero cost).
 - Config now supports an optional `models` key for per-model metadata overrides.
 
 ### Fixed
+- Interrupted turns no longer poison the history. An assistant turn holding a `toolCall` with no matching `toolResult` (ESC mid-execution, an errored turn, or a user message landing before the result) was serialized verbatim, and Azure rejected the request with `400 invalid_request_error: An assistant message with 'tool_calls' must be followed by tool messages responding to each 'tool_call_id'`. `transformMessages()` now synthesizes the missing tool results and drops aborted/errored assistant turns. Applied to the Anthropic route too, which is equally strict about a `tool_use` with no `tool_result`.
 - `DefaultAzureCredential` is now a module-level singleton instead of being recreated on every token refresh.
 - Anthropic text blocks are no longer filtered by `.trim()` — whitespace-only blocks are preserved to avoid empty message arrays.
 - Unknown `finish_reason` and `stop_reason` values from streaming responses are logged instead of silently ignored.
