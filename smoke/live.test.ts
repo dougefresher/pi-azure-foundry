@@ -68,14 +68,33 @@ const model = (id: string): Model<Api> => {
   return m;
 };
 
+/**
+ * Tools are sent by DEFAULT, because pi sends them on essentially every turn and
+ * their presence changes what the API accepts. Passing `tools: []` everywhere hid
+ * a 400 that only appears when function tools and reasoning_effort are combined.
+ */
+const TOOLS = [
+  {
+    name: 'noop',
+    description: 'Does nothing. Never call this.',
+    parameters: { type: 'object', properties: {}, required: [] },
+  },
+  {
+    name: 'read',
+    description: 'Read a file by path.',
+    parameters: { type: 'object', properties: { path: { type: 'string' } }, required: ['path'] },
+  },
+];
+
 /** Drive one request to completion and return the final assistant message. */
 async function complete(
   id: string,
   messages: Message[],
   options: Record<string, unknown> = {},
   systemPrompt = 'You are terse. Answer in under ten words.',
+  tools: unknown[] = TOOLS,
 ): Promise<AssistantMessage> {
-  const context = { systemPrompt, messages, tools: [] } as unknown as Context;
+  const context = { systemPrompt, messages, tools } as unknown as Context;
   let final: AssistantMessage | undefined;
   for await (const ev of stream!(model(id), context, { maxTokens: 4096, ...options })) {
     if (ev.type === 'done') final = ev.message;
@@ -198,14 +217,33 @@ describe('openai route', () => {
     TIMEOUT,
   );
 
+  // Azure's chat-completions route reports reasoning as a token count only, never
+  // as text, so these assert acceptance rather than a thinking block.
   test.skipIf(missing(OPENAI_MODEL))(
-    'reasoning_effort is accepted',
+    'reasoning is accepted WITH tools, the way pi actually calls it',
     async () => {
-      // Azure's chat-completions route reports reasoning as a token count only,
-      // never as text, so assert acceptance rather than a thinking block.
+      // Regression: sending reasoning_effort alongside function tools returns
+      //   400 "Function tools with reasoning_effort are not supported for this
+      //        model in /v1/chat/completions"
+      // Every case here used to pass tools: [], so this shipped broken.
       const r = await complete(OPENAI_MODEL, [{ role: 'user', content: 'What is 17*23?' }] as Message[], {
         reasoning: 'high',
       });
+      expect(r.usage.output).toBeGreaterThan(0);
+    },
+    TIMEOUT,
+  );
+
+  test.skipIf(missing(OPENAI_MODEL))(
+    'reasoning_effort is accepted when there are no tools',
+    async () => {
+      const r = await complete(
+        OPENAI_MODEL,
+        [{ role: 'user', content: 'What is 17*23?' }] as Message[],
+        { reasoning: 'high' },
+        'You are terse. Answer in under ten words.',
+        [],
+      );
       expect(r.usage.output).toBeGreaterThan(0);
     },
     TIMEOUT,

@@ -30,10 +30,11 @@ import {
   type Tool,
   type ToolResultMessage,
 } from '@earendil-works/pi-ai';
-import { adjustMaxTokensForThinking } from '@earendil-works/pi-ai/api/simple-options';
-import { transformMessages } from '@earendil-works/pi-ai/api/transform-messages';
 import { getBuiltinModels, getBuiltinProviders } from '@earendil-works/pi-ai/providers/all';
 import type { ExtensionAPI } from '@earendil-works/pi-coding-agent';
+// Vendored, not imported from pi-ai: the extension loader only resolves a fixed
+// allowlist of pi-ai specifiers. See src/pi-ai-vendored.ts.
+import { adjustMaxTokensForThinking, transformMessages } from './pi-ai-vendored.js';
 
 // =============================================================================
 // Config & Types
@@ -696,7 +697,15 @@ function streamOpenAI(
     };
     if (options?.temperature !== undefined) body.temperature = options.temperature;
     if (context.tools?.length) body.tools = toOpenAITools(context.tools);
-    if (model.reasoning) {
+    // reasoning_effort is incompatible with function tools on this route:
+    //   400 "Function tools with reasoning_effort are not supported for this model
+    //        in /v1/chat/completions. Please use /v1/responses instead."
+    // A coding agent sends tools on essentially every turn, so this is gated
+    // rather than merely documented. Nothing is lost in practice: Azure's
+    // chat-completions route never returns reasoning text anyway, only token
+    // counts, so the parameter only ever influenced effort — and exposing GPT
+    // reasoning properly needs the Responses API, a different route entirely.
+    if (model.reasoning && !context.tools?.length) {
       const effort = resolveReasoningEffort(model, options?.reasoning);
       if (effort) body.reasoning_effort = effort;
     }
