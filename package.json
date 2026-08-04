@@ -57,7 +57,7 @@
     "@changesets/cli": "^2.31.1",
     "@earendil-works/pi-ai": "^0.83.0",
     "@earendil-works/pi-coding-agent": "^0.83.0",
-    "@types/node": "^24.13.3",
+    "@types/node": "^26.1.2",
     "typescript": "^7.0.2"
   },
   "peerDependencies": {
