@@ -172,6 +172,50 @@ describe('empty content', () => {
     const texts = out.at(-1).content.map((b: any) => b.text);
     expect(texts).toEqual(['real']);
   });
+
+  /**
+   * An assistant turn whose every block is filtered out is dropped, leaving two
+   * adjacent user messages. That is deliberate, and matches upstream pi
+   * (api/anthropic-messages.ts): Azure's Anthropic passthrough merges consecutive
+   * same-role messages — verified live, HTTP 200 — so synthesizing a filler
+   * assistant block would only put words in the model's mouth.
+   */
+  const emptiedTurn: Message[] = [
+    { role: 'user', content: 'hi' } as Message,
+    {
+      role: 'assistant',
+      provider: 'azure-foundry',
+      api: 'azure-foundry',
+      model: 'claude-sonnet-4-5',
+      stopReason: 'stop',
+      content: [{ type: 'text', text: '   ' }],
+    } as unknown as Message,
+    { role: 'user', content: 'still there?' } as Message,
+  ];
+
+  test('Anthropic drops an assistant turn that reduces to nothing, rather than faking one', () => {
+    const roles = (toAnthropicMessages(claude, emptiedTurn) as any[]).map((m) => m.role);
+    expect(roles).toEqual(['user', 'user']);
+  });
+
+  // The OpenAI route keeps it: whitespace `content` is legal there, and only a
+  // turn with neither content nor tool_calls gets skipped.
+  test('the OpenAI route keeps a whitespace-only assistant turn', () => {
+    const roles = (toOpenAIMessages(gpt, undefined, emptiedTurn) as any[]).map((m) => m.role);
+    expect(roles).toEqual(['user', 'assistant', 'user']);
+  });
+
+  /**
+   * The one empty case the API does reject: `messages: []`, a 400 confirmed
+   * against the live endpoint. A history of nothing but a blank prompt filters
+   * down to exactly that.
+   */
+  test('a fully filtered history still sends one Anthropic message', () => {
+    const blank: Message[] = [{ role: 'user', content: '   ' } as Message];
+    const out = toAnthropicMessages(claude, blank) as any[];
+    expect(out).toHaveLength(1);
+    expect(out[0]).toMatchObject({ role: 'user' });
+  });
 });
 
 describe('thinking blocks', () => {

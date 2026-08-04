@@ -60,6 +60,13 @@ await ext({
   },
 } as any);
 
+// If registration never happened, `stream` is undefined and every test fails with
+// "stream is not a function" — which points at the harness instead of at the real
+// cause. The deployment guard below only inspects `models`, so say it here.
+if (!stream) {
+  throw new Error('the extension never called registerProvider — check azure-foundry.config.json and `az login`');
+}
+
 /** True when the deployment is absent — pass straight to test.skipIf. */
 const missing = (id: string): boolean => !models.some((m) => m.id === id);
 const model = (id: string): Model<Api> => {

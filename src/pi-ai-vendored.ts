@@ -2,12 +2,15 @@
  * Vendored from pi-ai 0.83.0. DO NOT import these from pi-ai directly.
  *
  * pi's extension loader (pi-coding-agent dist/core/extensions/loader.js) resolves
- * a fixed allowlist of specifiers for extensions:
+ * a fixed allowlist of specifiers for extensions — the whole map is:
  *
  *   @earendil-works/pi-ai                 -> ai/dist/compat.js
  *   @earendil-works/pi-ai/compat          -> ai/dist/compat.js
  *   @earendil-works/pi-ai/oauth           -> ai/dist/oauth.js
  *   @earendil-works/pi-ai/providers/all   -> ai/dist/providers/all.js
+ *   @earendil-works/pi-coding-agent       -> coding-agent/dist/index.js
+ *   @earendil-works/pi-agent-core         -> agent/dist/index.js
+ *   @earendil-works/pi-tui                -> tui/dist/index.js
  *
  * Anything else — `@earendil-works/pi-ai/api/transform-messages`, say — is
  * path-joined onto the resolved root and produces a module that cannot exist:

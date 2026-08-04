@@ -460,6 +460,15 @@ function resolveReasoningEffort(model: Model<Api>, level: SimpleStreamOptions['r
   return mapped ?? level;
 }
 
+/**
+ * Fields a deployment may stream reasoning text on. The streaming loop records
+ * which one it saw in `thinkingSignature` so replay can use the same field, so
+ * this doubles as the allowlist the converter validates that value against —
+ * anything else in there (an Anthropic base64 signature, from a deployment whose
+ * publisher changed under a reused name) must never become a JSON key.
+ */
+const REASONING_REPLAY_FIELDS = ['reasoning_content', 'reasoning', 'reasoning_text'] as const;
+
 // =============================================================================
 // OpenAI-format message conversion  (for OpenAI / MoonshotAI / etc.)
 // =============================================================================
@@ -514,7 +523,9 @@ export function toOpenAIMessages(
       // (captured as the thinking signature). GPT-5 on Azure emits
       // `reasoning_content`; sending it back keeps the chain intact across turns.
       const thinking = msg.content.filter((b) => b.type === 'thinking') as ThinkingContent[];
-      const replayField = thinking.find((b) => b.thinkingSignature)?.thinkingSignature;
+      const replayField = thinking
+        .map((b) => b.thinkingSignature)
+        .find((s): s is string => !!s && (REASONING_REPLAY_FIELDS as readonly string[]).includes(s));
       if (replayField && thinking.length) {
         entry[replayField] = thinking.map((b) => sanitizeSurrogates(b.thinking)).join('\n');
       }
@@ -634,6 +645,15 @@ export function toAnthropicMessages(model: Model<Api>, rawMessages: Message[]): 
       i = j - 1;
       out.push({ role: 'user', content: blocks });
     }
+  }
+  // Filtering above can empty the array outright — a history of nothing but a
+  // whitespace-only prompt, say. Verified against the live endpoint: that is a
+  // 400 "messages: at least one message is required", which reads as a bug in
+  // the extension rather than an empty prompt. Consecutive same-role messages,
+  // by contrast, are merged server-side, so an emptied assistant turn needs no
+  // placeholder.
+  if (out.length === 0 && rawMessages.length > 0) {
+    out.push({ role: 'user', content: '(no content)' });
   }
   return out;
 }
@@ -783,7 +803,7 @@ function streamOpenAI(
       // Reasoning arrives on a different field per deployment. Take the first
       // non-empty one — some gateways send the same text on two of them — and
       // remember which, so history replay can send it back on the same field.
-      for (const field of ['reasoning_content', 'reasoning', 'reasoning_text']) {
+      for (const field of REASONING_REPLAY_FIELDS) {
         const rd = delta[field];
         if (typeof rd !== 'string' || rd.length === 0) continue;
         let idx = output.content.findIndex((b) => b.type === 'thinking');
@@ -801,8 +821,9 @@ function streamOpenAI(
       if (delta.tool_calls) {
         for (const tc of delta.tool_calls) {
           const tci = tc.index ?? 0;
-          // Key by stream index, falling back to id. A deployment that repeats the
-          // id on every argument chunk must not spawn a new block each time.
+          // Key by stream index; an absent index means a single tool call. A
+          // deployment that repeats the id on every argument chunk must not spawn
+          // a new block each time.
           if (!tcContentIdx.has(tci)) {
             output.content.push({ type: 'toolCall', id: tc.id ?? '', name: tc.function?.name ?? '', arguments: {} });
             const ci = output.content.length - 1;

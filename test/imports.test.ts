@@ -12,7 +12,11 @@ import { describe, expect, test } from 'bun:test';
 import { readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
-/** Specifiers pi's extension loader resolves. Everything else must be vendored. */
+/**
+ * Specifiers pi's extension loader resolves — the complete map from
+ * `pi-coding-agent/dist/core/extensions/loader.js`. Everything else must be
+ * vendored. Verify against that file before adding an entry here.
+ */
 const ALLOWED_BARE_IMPORTS = new Set([
   '@earendil-works/pi-ai',
   '@earendil-works/pi-ai/compat',
@@ -34,15 +38,19 @@ function sourceFiles(dir: string): string[] {
   );
 }
 
-/** Every static import/export specifier in a file. */
-function importsOf(file: string): string[] {
-  const src = readFileSync(file, 'utf-8');
+/** Every import/export specifier in a source string, in every syntactic form. */
+function specifiersIn(src: string): string[] {
   const specifiers: string[] = [];
   // from '...' covers both `import ... from` and `export ... from`.
   for (const m of src.matchAll(/\bfrom\s+['"]([^'"]+)['"]/g)) specifiers.push(m[1]);
   for (const m of src.matchAll(/\bimport\s*\(\s*['"]([^'"]+)['"]\s*\)/g)) specifiers.push(m[1]);
+  // Side-effect imports have no `from` clause and no parentheses.
+  for (const m of src.matchAll(/^\s*import\s+['"]([^'"]+)['"]/gm)) specifiers.push(m[1]);
+  for (const m of src.matchAll(/\brequire\s*\(\s*['"]([^'"]+)['"]\s*\)/g)) specifiers.push(m[1]);
   return specifiers;
 }
+
+const importsOf = (file: string): string[] => specifiersIn(readFileSync(file, 'utf-8'));
 
 describe('extension imports are loader-resolvable', () => {
   const files = sourceFiles('src');
@@ -61,5 +69,23 @@ describe('extension imports are loader-resolvable', () => {
   test('the pi-ai subpath that broke 1.1.0 is specifically absent', () => {
     const all = files.flatMap(importsOf);
     expect(all.filter((s) => /^@earendil-works\/pi-ai\/(api|utils)\//.test(s))).toEqual([]);
+  });
+
+  // A guard that misses a syntactic form is worse than no guard: it reports green.
+  test('the scanner sees every import form, not just `from`', () => {
+    const src = [
+      `import { a } from '@scope/from-clause';`,
+      `export { b } from '@scope/export-from';`,
+      `import '@scope/side-effect';`,
+      `await import('@scope/dynamic');`,
+      `const c = require('@scope/require');`,
+    ].join('\n');
+    expect(specifiersIn(src).sort()).toEqual([
+      '@scope/dynamic',
+      '@scope/export-from',
+      '@scope/from-clause',
+      '@scope/require',
+      '@scope/side-effect',
+    ]);
   });
 });

@@ -33,18 +33,23 @@ deployment silently reports $0.
 **pi's extension loader resolves a fixed allowlist of specifiers**, in
 `pi-coding-agent/dist/core/extensions/loader.js`:
 
-```
+```text
 @earendil-works/pi-ai                 -> ai/dist/compat.js
 @earendil-works/pi-ai/compat          -> ai/dist/compat.js
 @earendil-works/pi-ai/oauth           -> ai/dist/oauth.js
 @earendil-works/pi-ai/providers/all   -> ai/dist/providers/all.js
+@earendil-works/pi-coding-agent       -> coding-agent/dist/index.js
+@earendil-works/pi-agent-core         -> agent/dist/index.js
+@earendil-works/pi-tui                -> tui/dist/index.js
 ```
+
+That is the entire map. Nothing else resolves.
 
 Any other specifier is path-joined onto the resolved root — which is a *file* —
 so `@earendil-works/pi-ai/api/transform-messages` becomes a module that cannot
 exist, and the extension dies at load:
 
-```
+```text
 Cannot find module '.../pi-ai/dist/compat.js/api/transform-messages'
 ```
 
@@ -151,6 +156,13 @@ based on assumption:
   parallel tool calls, which Claude does constantly.
 - Whitespace-only text blocks and thinking blocks with an empty signature are
   both rejected by Anthropic on replay.
+- **Consecutive same-role messages are merged server-side, not rejected** (200,
+  curl-verified). So an assistant turn whose every block gets filtered out is
+  dropped rather than backfilled with a placeholder — same as upstream pi's
+  `api/anthropic-messages.ts`. Do not "fix" the adjacent user messages.
+- **`messages: []` IS rejected** ("at least one message is required"), which a
+  history of nothing but a blank prompt filters down to. `toAnthropicMessages`
+  guards that case explicitly.
 
 ## Release flow
 
