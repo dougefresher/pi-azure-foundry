@@ -1,6 +1,12 @@
 node_modules/
 dist/
 
+# pi discovers extensions in cwd/.pi/extensions, so anything here shadows the
+# real build when you run pi inside this repo. A tracked copy of src/index.ts
+# lived here and silently drifted 360 lines behind. Use `pi -ne -e .` instead,
+# or symlink dist/index.js in and leave it untracked.
+.pi/
+
 # Local config — may contain API keys
 azure-foundry.config.json
 .env
