@@ -186,13 +186,17 @@ based on assumption:
 here — the inherited `publish.yml` published to npm on a `v*` tag, which both
 failed (`ENEEDAUTH`) and contradicted the flow above. Do not add one back.
 
-The pipelines live in `~/projects/me/buildkite` (`builds/npm/pipeline.yml`) and
-are shared across projects, so a change there lands everywhere. The npm build
-step is `npm ci && bun run check`, followed by `git diff --exit-code` — which
-exists because a `check` script running a formatter with `--write` cannot fail on
-drift: it fixes it in the container, exits 0, and the fix dies with the agent.
-Hence `format` writes and `check` only reads. Note the pipeline does **not** run
-`bun test` yet; the offline suite is on you to run.
+The pipelines live in <https://github.com/dougefresher/buildkite>
+(`builds/npm/pipeline.yml`), usually checked out at `~/projects/me/buildkite`.
+They are shared across every npm and bun project, so a change there lands
+everywhere at once.
+
+The npm build step is `npm ci && bun run check`, followed by
+`git diff --exit-code` — which exists because a `check` script running a
+formatter with `--write` cannot fail on drift: it fixes it in the container,
+exits 0, and the fix dies with the agent. Hence `format` writes and `check` only
+reads. Note the pipeline does **not** run `bun test` yet; the offline suite is on
+you to run.
 
 ## Config
 
