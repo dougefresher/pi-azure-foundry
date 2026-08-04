@@ -180,6 +180,20 @@ based on assumption:
 - npm publishing is not part of this fork's flow.
 - Install dependencies with **npm**; run scripts and tests with **bun**.
 
+## CI
+
+**Buildkite, not GitHub Actions.** There is deliberately no `.github/workflows`
+here — the inherited `publish.yml` published to npm on a `v*` tag, which both
+failed (`ENEEDAUTH`) and contradicted the flow above. Do not add one back.
+
+The pipelines live in `~/projects/me/buildkite` (`builds/npm/pipeline.yml`) and
+are shared across projects, so a change there lands everywhere. The npm build
+step is `npm ci && bun run check`, followed by `git diff --exit-code` — which
+exists because a `check` script running a formatter with `--write` cannot fail on
+drift: it fixes it in the container, exits 0, and the fix dies with the agent.
+Hence `format` writes and `check` only reads. Note the pipeline does **not** run
+`bun test` yet; the offline suite is on you to run.
+
 ## Config
 
 `azure-foundry.config.json`, looked up in cwd then `~/.pi/`. Auth is either
