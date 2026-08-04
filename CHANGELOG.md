@@ -1,1 +1,1 @@
-# @dougEfresh/pi-azure-foundry
+# @dougefresh/pi-azure-foundry
