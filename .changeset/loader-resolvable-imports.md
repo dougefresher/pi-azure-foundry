@@ -1,5 +1,5 @@
 ---
-"@dougEfresh/pi-azure-foundry": patch
+"@dougefresh/pi-azure-foundry": patch
 ---
 
 Fix two runtime bugs that only appear in an installed extension.

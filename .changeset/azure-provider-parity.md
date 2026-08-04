@@ -1,5 +1,5 @@
 ---
-"@dougEfresh/pi-azure-foundry": minor
+"@dougefresh/pi-azure-foundry": minor
 ---
 
 Bring both routes up to parity with pi-ai's own provider implementations, working

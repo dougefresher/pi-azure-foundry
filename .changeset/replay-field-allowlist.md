@@ -1,5 +1,5 @@
 ---
-'@dougEfresh/pi-azure-foundry': patch
+'@dougefresh/pi-azure-foundry': patch
 ---
 
 Harden two message-conversion edge cases found in review:

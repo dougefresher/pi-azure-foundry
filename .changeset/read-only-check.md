@@ -1,5 +1,5 @@
 ---
-'@dougEfresh/pi-azure-foundry': patch
+'@dougefresh/pi-azure-foundry': patch
 ---
 
 Split formatting out of `check`. `bun run format` writes fixes; `bun run check`
