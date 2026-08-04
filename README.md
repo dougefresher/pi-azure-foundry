@@ -209,12 +209,23 @@ pi -e .
 ```
 
 ```bash
-npm run dev       # watch mode
+npm run dev         # watch mode
 npm run type-check  # type check without building
+npm test            # offline conversion tests
+npm run smoke-test  # live tests against a real Foundry account (costs a little)
 ```
 
 ---
 
+## Credits
+
+A fork of [nquandt/pi-azure-foundry](https://github.com/nquandt/pi-azure-foundry)
+by [Nicholas Quandt](https://github.com/nquandt), who wrote the original
+extension — deployment discovery, the publisher-based routing between the
+OpenAI-compatible and Anthropic APIs, and the streaming translation this builds
+on. Thanks for doing the hard part first.
+
 ## License
 
-MIT
+MIT — see [LICENSE](./LICENSE). Copyright is held jointly: the original work by
+Nicholas Quandt (2025), modifications in this fork by dougEfresh (2026).

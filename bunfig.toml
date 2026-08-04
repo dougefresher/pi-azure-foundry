@@ -1,0 +1,5 @@
+[test]
+# Default discovery is scoped to test/ so `bun test` only ever runs the offline
+# suite. smoke/live.test.ts talks to a real Azure account and costs money — it is
+# opt-in via `bun run smoke`, which points bun test at that path explicitly.
+root = "test"
