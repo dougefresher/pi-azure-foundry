@@ -116,7 +116,7 @@ Your deployments will appear in the pi model picker under the **Azure Foundry** 
 
 ## How it works
 
-- **Deployment discovery** — on startup the extension calls the Foundry deployments API and filters to chat-capable deployments. No model list to maintain manually.
+- **Deployment discovery** — on startup the extension calls the Foundry deployments API and filters to chat-capable deployments. No model list to maintain manually. Successful results are cached under `~/.cache/pi-azure-foundry` (default 1-hour TTL) so a fresh pi session skips the network round-trip and boots without an Azure/Entra call. Logs say `Serving N deployment(s) from cache` on a hit.
 - **Metadata resolution** — model details (context window, max output tokens, reasoning support, vision support, and per-token pricing) are resolved by matching the Azure catalog model name against [pi-ai](https://npmjs.com/package/@earendil-works/pi-ai)'s built-in model providers. The match is case-insensitive, so `Kimi-K2.7-Code` resolves to pi-ai's `kimi-k2.7-code`.
 - **Config overrides** — you can pin or override details for any catalog model via the optional `models` property in `azure-foundry.config.json`. This takes precedence over the pi-ai catalog lookup and is useful for custom deployments, negotiated pricing, or models not yet in pi-ai. See the example below.
 - **Routing** — Anthropic deployments are routed to `/anthropic/v1/messages` (native Messages API with tool use and extended thinking). All other deployments use `/openai/deployments/{id}/chat/completions` (OpenAI-compatible). Newer GPT-5/o-series models use `max_completion_tokens` instead of `max_tokens`; this is inferred from model name or set explicitly in `models` config overrides.
@@ -133,6 +133,21 @@ Your deployments will appear in the pi model picker under the **Azure Foundry** 
   }
 }
 ```
+
+### Deployment cache config
+
+The finished `deployments` payload is cached on disk after a successful fetch, so subsequent pi startups within the TTL skip the network call entirely. The cache lives at `~/.cache/pi-azure-foundry/deployments.json`, is scoped to the `resourceId` + `projectId` + api-version (any change is a miss), and is ignored entirely when `cache` is false.
+
+```jsonc
+{
+  "cache": true,          // set false to always hit the network (default true)
+  "cacheTtlMinutes": 60    // how long a cached payload is considered fresh (default 60)
+}
+```
+
+- A missing, stale, corrupt, or mismatched cache file is a silent miss — the extension falls through to the live API and re-writes the cache with the fresh payload. A corrupt file is deleted rather than re-read.
+- If you just redeployed a model and pi doesn't see it yet, either wait out the TTL, set `cache: false`, or delete `~/.cache/pi-azure-foundry/deployments.json`.
+- Only the deployments manifest is cached — never the API key or Entra tokens — so disabling or clearing the cache cannot leak credentials.
 
 ---
 
