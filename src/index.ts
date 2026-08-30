@@ -9,9 +9,9 @@
  * Config: ./azure-foundry.config.json
  */
 
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { resolve } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import { type AccessToken, DefaultAzureCredential } from '@azure/identity';
 import {
   type Api,
@@ -66,6 +66,10 @@ interface Config {
   retry?: RetryConfig;
   /** api-version for the OpenAI-compat route. Override if your resource lags. */
   openaiApiVersion?: string;
+  /** Enable the on-disk deployments cache under ~/.cache/pi-azure-foundry. Default true. */
+  cache?: boolean;
+  /** Cache TTL in minutes (default 60). Ignored unless cache is true. */
+  cacheTtlMinutes?: number;
 }
 
 /**
@@ -113,7 +117,7 @@ function makeTokenGetter(auth: AuthConfig): () => Promise<string> {
   return getIdentityToken;
 }
 
-interface Deployment {
+export interface Deployment {
   name: string;
   modelName?: string;
   modelPublisher?: string;
@@ -137,6 +141,110 @@ function loadConfig(): Config {
       candidates.map((p) => `  ${p}`).join('\n') +
       '\n\nCreate one in your project root or at ~/.pi/azure-foundry.config.json',
   );
+}
+
+// =============================================================================
+// Deployment cache
+// =============================================================================
+
+/** Default TTL for the cached deployments payload (1 hour). */
+export const DEFAULT_CACHE_TTL_MS = 60 * 60 * 1000;
+const CACHE_DIR = join(homedir(), '.cache', 'pi-azure-foundry');
+const CACHE_FILE = join(CACHE_DIR, 'deployments.json');
+
+interface DeploymentCacheEntry {
+  /** Fingerprint of the config that produced this payload; mismatch = cache miss. */
+  key: string;
+  /** When the payload was fetched, as epoch ms. */
+  fetchedAt: number;
+  /** Raw deployments payload straight from Azure (pre-filter). */
+  deployments: Deployment[];
+}
+
+/**
+ * Resolve the effective cache policy from config. Pure and exported so the
+ * toggle/TTL semantics are unit-testable without hitting the network.
+ *
+ * - cache omitted       -> enabled, default TTL (1h)
+ * - cache: false        -> disabled
+ * - cacheTtlMinutes     -> overrides the TTL (ignored when disabled)
+ */
+export function resolveCachePolicy(config: { cache?: boolean; cacheTtlMinutes?: number }): {
+  enabled: boolean;
+  ttlMs: number;
+} {
+  const enabled = config.cache !== false;
+  const ttlMs = (config.cacheTtlMinutes ?? DEFAULT_CACHE_TTL_MS / 60_000) * 60_000;
+  return { enabled, ttlMs };
+}
+
+/**
+ * Fingerprint which resource/project/api-version a cached payload belongs to,
+ * so a config change can never serve deployment data for the wrong project.
+ */
+export function deploymentCacheKey(resourceId: string, projectId: string): string {
+  return `${resourceId}|${projectId}|${openaiApiVersion}`;
+}
+
+/**
+ * Pure predicate: is a cached entry usable, i.e. unfiltered shape, matching the
+ * given project key, and not older than the TTL? Kept separate from I/O so the
+ * freshness/key semantics are unit-testable without touching the filesystem.
+ */
+export function isDeploymentCacheEntryUsable(
+  entry: DeploymentCacheEntry | null | undefined,
+  key: string,
+  ttlMs: number,
+): entry is DeploymentCacheEntry {
+  if (!entry) return false;
+  if (entry.key !== key) return false;
+  if (!Array.isArray(entry.deployments)) return false;
+  // fetchedAt arrives from unvalidated JSON. Require a finite number and a
+  // non-negative age: a future timestamp would otherwise read as a hit until
+  // the system clock reaches it, and non-numeric values would poison the age.
+  if (typeof entry.fetchedAt !== 'number' || !Number.isFinite(entry.fetchedAt)) return false;
+  const age = Date.now() - entry.fetchedAt;
+  if (age < 0) return false;
+  return age <= ttlMs;
+}
+
+/**
+ * Read the cached deployments if it exists, matches the current project, and is
+ * still within TTL. Never throws: a missing, stale, corrupt, or mismatched entry
+ * is simply a miss that the network path will fill. Pass deploy every time so
+ * the resolved list is still surfaced in logs.
+ */
+export function readDeploymentCache(key: string, ttlMs: number, file = CACHE_FILE): DeploymentCacheEntry | null {
+  try {
+    if (!existsSync(file)) return null;
+    const parsed = JSON.parse(readFileSync(file, 'utf-8')) as DeploymentCacheEntry;
+    if (!isDeploymentCacheEntryUsable(parsed, key, ttlMs)) return null;
+    return parsed;
+  } catch (error) {
+    // Corrupt cache files are a soft miss, not a hard failure. Nuke the file so
+    // the next read doesn't re-parse garbage, then fall through to the network.
+    try {
+      rmSync(file, { force: true });
+    } catch {
+      /* best-effort */
+    }
+    console.log(
+      `[Azure Foundry] Discarding unreadable cache: ${error instanceof Error ? error.message : String(error)}`,
+    );
+    return null;
+  }
+}
+
+/** Write the raw (pre-filter) deployments payload to disk. Best-effort. */
+export function writeDeploymentCache(key: string, deployments: Deployment[], file = CACHE_FILE): void {
+  try {
+    mkdirSync(dirname(file), { recursive: true });
+    const entry: DeploymentCacheEntry = { key, fetchedAt: Date.now(), deployments };
+    writeFileSync(file, JSON.stringify(entry), 'utf-8');
+  } catch (error) {
+    // Persisting the cache is best-effort; a read-only home dir must not crash the extension.
+    console.log(`[Azure Foundry] Failed to write cache: ${error instanceof Error ? error.message : String(error)}`);
+  }
 }
 
 // =============================================================================
@@ -1151,22 +1259,42 @@ export default async function (pi: ExtensionAPI) {
   console.log(`[Azure Foundry] OpenAI-compat api-version: ${openaiApiVersion}`);
   const endpoint = `https://${config.resourceId}.services.ai.azure.com/api/projects/${config.projectId}`;
 
-  // Discover deployments
-  const url = `${endpoint}/deployments?api-version=v1`;
-  console.log(`[Azure Foundry] Fetching deployments from: ${url}`);
+  // Discover deployments, preferring the on-disk cache unless it's disabled,
+  // stale, or belongs to a different resource/project.
+  const { enabled: cacheEnabled, ttlMs: cacheTtlMs } = resolveCachePolicy(config);
+  const cacheKey = deploymentCacheKey(config.resourceId, config.projectId);
+  const cached = cacheEnabled ? readDeploymentCache(cacheKey, cacheTtlMs) : null;
 
+  // The provider always needs a token getter for request-time auth; creating it
+  // here is free (makeTokenGetter just builds a closure) and does not trigger an
+  // eager Entra fetch on a cache hit — getIdentityToken only calls
+  // credential.getToken on first actual use.
   const getToken = makeTokenGetter(config.auth);
   console.log(`[Azure Foundry] Auth: ${config.auth.type}`);
 
-  const token = await getToken();
-  const response = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
-  if (!response.ok) {
-    const b = await response.text().catch(() => '');
-    throw new Error(`Azure Foundry API ${response.status}: ${b.slice(0, 200)}`);
-  }
+  let deployments: Deployment[];
+  if (cached) {
+    deployments = cached.deployments.filter((d) => d.capabilities?.chat_completion === 'true');
+    console.log(
+      `[Azure Foundry] Serving ${cached.deployments.length} deployment(s) from cache (~/.cache/pi-azure-foundry)`,
+    );
+  } else {
+    const url = `${endpoint}/deployments?api-version=v1`;
+    console.log(`[Azure Foundry] Fetching deployments from: ${url}`);
 
-  const data = (await response.json()) as { value?: Deployment[] };
-  const deployments = (data.value ?? []).filter((d) => d.capabilities?.chat_completion === 'true');
+    const token = await getToken();
+    const response = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
+    if (!response.ok) {
+      const b = await response.text().catch(() => '');
+      throw new Error(`Azure Foundry API ${response.status}: ${b.slice(0, 200)}`);
+    }
+
+    const data = (await response.json()) as { value?: Deployment[] };
+    deployments = (data.value ?? []).filter((d) => d.capabilities?.chat_completion === 'true');
+    // Persist the raw payload (pre-filter) so a later capability change still
+    // resolves correctly; the filter is re-applied on every cache read above.
+    if (cacheEnabled) writeDeploymentCache(cacheKey, data.value ?? []);
+  }
   if (deployments.length === 0) throw new Error('No chat-capable deployments found');
 
   const catalog = buildKnownModelCatalog();

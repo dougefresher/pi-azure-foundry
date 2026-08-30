@@ -9,6 +9,8 @@
     "maxRetries": 4,
     "maxRetryDelayMs": 60000
   },
+  "cache": true,
+  "cacheTtlMinutes": 60,
   "models": {
     "Kimi-K2.7-Code": {
       "contextWindow": 262144,

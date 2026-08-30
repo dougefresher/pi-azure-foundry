@@ -4,6 +4,8 @@
   "auth": {
     "type": "azure-identity"
   },
+  "cache": true,
+  "cacheTtlMinutes": 60,
   "models": {
     "Kimi-K2.7-Code": {
       "contextWindow": 262144,
