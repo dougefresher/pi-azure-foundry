@@ -1,5 +1,11 @@
 # @dougefresh/pi-azure-foundry
 
+## 1.3.1
+
+### Patch Changes
+
+- 85b11ac: Select catalog metadata using Azure's model publisher so deployments with IDs shared across providers, such as Grok 4.6, receive the correct limits and capabilities.
+
 ## 1.3.0
 
 ### Minor Changes
