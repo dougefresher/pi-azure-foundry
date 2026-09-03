@@ -278,17 +278,33 @@ function normalizeModelName(name: string): string {
   return name.toLowerCase();
 }
 
-/** Build a map from normalized model id to pi-ai's built-in model metadata. */
-function buildKnownModelCatalog(): Map<string, Model<Api>> {
-  const catalog = new Map<string, Model<Api>>();
+interface KnownModelCatalog {
+  /** First catalog entry for an ID, retained as the fallback for unknown publishers. */
+  byId: Map<string, Model<Api>>;
+  /** Catalog entries indexed by their pi-ai provider id, for publisher-aware selection. */
+  byProvider: Map<string, Map<string, Model<Api>>>;
+}
+
+/**
+ * Build the pi-ai catalog indexed both by model ID and provider. Model IDs are
+ * not globally unique: grok-4.6, for example, has different metadata on the
+ * GitHub Copilot and xAI providers. Azure's modelPublisher lets us choose the
+ * matching catalog instead of accepting whichever provider happens to be first.
+ */
+function buildKnownModelCatalog(): KnownModelCatalog {
+  const byId = new Map<string, Model<Api>>();
+  const byProvider = new Map<string, Map<string, Model<Api>>>();
   for (const provider of getBuiltinProviders()) {
+    const providerModels = new Map<string, Model<Api>>();
     for (const model of getBuiltinModels(provider)) {
       const key = normalizeModelName(model.id);
-      if (catalog.has(key)) continue;
-      catalog.set(key, model as Model<Api>);
+      const typedModel = model as Model<Api>;
+      providerModels.set(key, typedModel);
+      if (!byId.has(key)) byId.set(key, typedModel);
     }
+    byProvider.set(provider.toLowerCase(), providerModels);
   }
-  return catalog;
+  return { byId, byProvider };
 }
 
 /**
@@ -299,23 +315,27 @@ function buildKnownModelCatalog(): Map<string, Model<Api>> {
  */
 function resolveModelDetails(
   modelName: string,
-  catalog: Map<string, Model<Api>>,
+  modelPublisher: string | undefined,
+  catalog: KnownModelCatalog,
   overrides: Record<string, ModelConfigOverride> | undefined,
 ): ResolvedModelDetails {
   const override = overrides?.[modelName];
-  const catalogModel = catalog.get(normalizeModelName(modelName));
+  const key = normalizeModelName(modelName);
+  const catalogModel = modelPublisher ? catalog.byProvider.get(modelPublisher.toLowerCase())?.get(key) : undefined;
+  const fallbackCatalogModel = catalog.byId.get(key);
 
   // Start with catalog metadata, or the conservative fallback if unknown.
-  const base: ResolvedModelDetails = catalogModel
+  const selectedCatalogModel = catalogModel ?? fallbackCatalogModel;
+  const base: ResolvedModelDetails = selectedCatalogModel
     ? (() => {
-        const compatMaxTokensField = (catalogModel as any).compat?.maxTokensField;
+        const compatMaxTokensField = (selectedCatalogModel as any).compat?.maxTokensField;
         return {
-          contextWindow: catalogModel.contextWindow,
-          maxTokens: catalogModel.maxTokens,
-          reasoning: catalogModel.reasoning,
-          input: catalogModel.input,
-          cost: catalogModel.cost,
-          thinkingLevelMap: catalogModel.thinkingLevelMap,
+          contextWindow: selectedCatalogModel.contextWindow,
+          maxTokens: selectedCatalogModel.maxTokens,
+          reasoning: selectedCatalogModel.reasoning,
+          input: selectedCatalogModel.input,
+          cost: selectedCatalogModel.cost,
+          thinkingLevelMap: selectedCatalogModel.thinkingLevelMap,
           openaiTokenLimit:
             compatMaxTokensField === 'max_tokens' || compatMaxTokensField === 'max_completion_tokens'
               ? compatMaxTokensField
@@ -372,11 +392,11 @@ const providerAuthMap = new Map<string, ProviderAuth>();
 
 function deploymentToModel(
   d: Deployment,
-  catalog: Map<string, Model<Api>>,
+  catalog: KnownModelCatalog,
   overrides: Record<string, ModelConfigOverride> | undefined,
 ) {
   const modelName = d.modelName ?? d.name;
-  const details = resolveModelDetails(modelName, catalog, overrides);
+  const details = resolveModelDetails(modelName, d.modelPublisher, catalog, overrides);
   apiRouteMap.set(d.name, resolveApiRoute(d, details));
 
   const model = {
