@@ -3,8 +3,10 @@
  *
  * Discovers models from Azure AI Foundry Deployments API and registers them with pi.
  * Routes to the correct API based on model publisher:
- *   - Anthropic → native Messages API at /anthropic/v1/messages
- *   - OpenAI/others → OpenAI-compat at /openai/deployments/{id}/chat/completions
+ *   - Anthropic -> native Messages API at /anthropic/v1/messages
+ *   - xAI (Grok) -> OpenAI-compat at /api/projects/{project}/openai/v1/chat/completions
+ *     (project-scoped; deployment name passed in the body, no api-version query)
+ *   - OpenAI/others -> OpenAI-compat at /openai/deployments/{id}/chat/completions
  *
  * Config: ./azure-foundry.config.json
  */
@@ -360,7 +362,9 @@ function resolveModelDetails(
 }
 
 /** Per-deployment API route resolved at discovery time */
-type ApiRoute = { kind: 'anthropic-messages' } | { kind: 'openai-chat-completions'; tokenLimit: OpenAITokenLimitParam };
+type ApiRoute =
+  | { kind: 'anthropic-messages' }
+  | { kind: 'openai-chat-completions'; tokenLimit: OpenAITokenLimitParam; projectScoped?: boolean };
 
 const apiRouteMap = new Map<string, ApiRoute>();
 
@@ -375,12 +379,17 @@ function inferOpenAITokenLimit(modelName: string, resolved: ResolvedModelDetails
 function resolveApiRoute(d: Deployment, resolved: ResolvedModelDetails): ApiRoute {
   if (d.modelPublisher === 'Anthropic') return { kind: 'anthropic-messages' };
   const modelName = d.modelName ?? d.name;
-  return { kind: 'openai-chat-completions', tokenLimit: inferOpenAITokenLimit(modelName, resolved) };
+  return {
+    kind: 'openai-chat-completions',
+    tokenLimit: inferOpenAITokenLimit(modelName, resolved),
+    projectScoped: d.modelPublisher === 'xAI',
+  };
 }
 
 function describeApiRoute(route: ApiRoute): string {
   if (route.kind === 'anthropic-messages') return 'anthropic-messages';
-  return `openai-chat-completions (${route.tokenLimit})`;
+  const where = route.projectScoped ? 'project-scoped /openai/v1' : 'deployment-path';
+  return `openai-chat-completions (${route.tokenLimit}, ${where})`;
 }
 
 /** Auth context per-provider, keyed by provider id */
@@ -831,11 +840,20 @@ function streamOpenAI(
   output: AssistantMessage,
   stream: ReturnType<typeof createAssistantMessageEventStream>,
   baseHost: string,
+  projectBase: string,
   auth: ProviderAuth,
   route: Extract<ApiRoute, { kind: 'openai-chat-completions' }>,
 ): Promise<void> {
   return (async () => {
-    const url = `${baseHost}/openai/deployments/${model.id}/chat/completions?api-version=${openaiApiVersion}`;
+    // xAI (Grok) deployments use the documented project-scoped endpoint
+    // /api/projects/{project}/openai/v1/chat/completions with the deployment
+    // name passed in the body (no api-version query — the /v1 path handles
+    // compatibility). All other OpenAI-compatible publishers keep the
+    // deployment-in-path route at the service origin.
+    const projectScoped = route.projectScoped === true;
+    const url = projectScoped
+      ? `${projectBase}/openai/v1/chat/completions`
+      : `${baseHost}/openai/deployments/${model.id}/chat/completions?api-version=${openaiApiVersion}`;
     const maxOutput = options?.maxTokens ?? model.maxTokens;
     const body: Record<string, unknown> = {
       messages: toOpenAIMessages(model, context.systemPrompt, context.messages),
@@ -843,6 +861,7 @@ function streamOpenAI(
       stream: true,
       stream_options: { include_usage: true },
     };
+    if (projectScoped) body.model = model.id;
     if (options?.temperature !== undefined) body.temperature = options.temperature;
     if (context.tools?.length) body.tools = toOpenAITools(context.tools);
     // reasoning_effort is incompatible with function tools on this route:
@@ -1233,7 +1252,11 @@ function streamAzureFoundry(
     };
 
     try {
+      // baseHost is the service origin (for the deployment-in-path and Anthropic
+      // routes); projectBase carries the /api/projects/{project} path that xAI
+      // (Grok) deployments need for their documented project-scoped endpoint.
       const baseHost = new URL(model.baseUrl).origin;
+      const projectBase = model.baseUrl;
       const route = apiRouteMap.get(model.id) ?? { kind: 'openai-chat-completions', tokenLimit: 'max_tokens' };
       // Resolve auth: use registered provider auth, fall back to api-key from options.
       const auth: ProviderAuth = providerAuthMap.get(model.provider) ?? {
@@ -1244,7 +1267,7 @@ function streamAzureFoundry(
       if (route.kind === 'anthropic-messages') {
         await streamAnthropic(model, context, options, output, stream, baseHost, auth);
       } else {
-        await streamOpenAI(model, context, options, output, stream, baseHost, auth, route);
+        await streamOpenAI(model, context, options, output, stream, baseHost, projectBase, auth, route);
       }
 
       stream.push({ type: 'done', reason: output.stopReason as 'stop' | 'length' | 'toolUse', message: output });
