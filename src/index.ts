@@ -253,7 +253,7 @@ export function writeDeploymentCache(key: string, deployments: Deployment[], fil
 // Deployment → Model mapping
 // =============================================================================
 
-interface ResolvedModelDetails {
+export interface ResolvedModelDetails {
   contextWindow: number;
   maxTokens: number;
   reasoning: boolean;
@@ -280,7 +280,7 @@ function normalizeModelName(name: string): string {
   return name.toLowerCase();
 }
 
-interface KnownModelCatalog {
+export interface KnownModelCatalog {
   /** First catalog entry for an ID, retained as the fallback for unknown publishers. */
   byId: Map<string, Model<Api>>;
   /** Catalog entries indexed by their pi-ai provider id, for publisher-aware selection. */
@@ -293,7 +293,7 @@ interface KnownModelCatalog {
  * GitHub Copilot and xAI providers. Azure's modelPublisher lets us choose the
  * matching catalog instead of accepting whichever provider happens to be first.
  */
-function buildKnownModelCatalog(): KnownModelCatalog {
+export function buildKnownModelCatalog(): KnownModelCatalog {
   const byId = new Map<string, Model<Api>>();
   const byProvider = new Map<string, Map<string, Model<Api>>>();
   for (const provider of getBuiltinProviders()) {
@@ -312,10 +312,12 @@ function buildKnownModelCatalog(): KnownModelCatalog {
 /**
  * Resolve model details in precedence order:
  *   1. User override in azure-foundry.config.json (exact Azure modelName)
- *   2. pi-ai built-in model catalog (normalized id match)
- *   3. Conservative fallback defaults
+ *   2. Azure-specific pi-ai catalog (for Azure OpenAI deployments)
+ *   3. pi-ai publisher catalog (normalized id match)
+ *   4. First matching pi-ai catalog entry
+ *   5. Conservative fallback defaults
  */
-function resolveModelDetails(
+export function resolveModelDetails(
   modelName: string,
   modelPublisher: string | undefined,
   catalog: KnownModelCatalog,
@@ -323,11 +325,19 @@ function resolveModelDetails(
 ): ResolvedModelDetails {
   const override = overrides?.[modelName];
   const key = normalizeModelName(modelName);
-  const catalogModel = modelPublisher ? catalog.byProvider.get(modelPublisher.toLowerCase())?.get(key) : undefined;
+
+  // Foundry identifies Azure OpenAI deployments merely as "OpenAI", but their
+  // limits can differ from the direct OpenAI API. Prefer pi-ai's Azure catalog;
+  // fall back to direct OpenAI metadata for models it does not list.
+  const azureOpenAIModel =
+    modelPublisher === 'OpenAI' ? catalog.byProvider.get('azure-openai-responses')?.get(key) : undefined;
+  const publisherCatalogModel = modelPublisher
+    ? catalog.byProvider.get(modelPublisher.toLowerCase())?.get(key)
+    : undefined;
   const fallbackCatalogModel = catalog.byId.get(key);
 
-  // Start with catalog metadata, or the conservative fallback if unknown.
-  const selectedCatalogModel = catalogModel ?? fallbackCatalogModel;
+  // Start with the most specific catalog metadata, or conservative defaults.
+  const selectedCatalogModel = azureOpenAIModel ?? publisherCatalogModel ?? fallbackCatalogModel;
   const base: ResolvedModelDetails = selectedCatalogModel
     ? (() => {
         const compatMaxTokensField = (selectedCatalogModel as any).compat?.maxTokensField;
