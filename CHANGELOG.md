@@ -1,5 +1,11 @@
 # @dougefresh/pi-azure-foundry
 
+## 1.3.3
+
+### Patch Changes
+
+- b2e336b: Prefer Azure OpenAI catalog metadata for Foundry deployments reported as `OpenAI`, so GPT-5.6 Terra receives its 1.05M context window rather than the direct OpenAI API's 272K limit.
+
 ## 1.3.2
 
 ### Patch Changes

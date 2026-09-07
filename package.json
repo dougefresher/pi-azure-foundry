@@ -1,6 +1,6 @@
 {
   "name": "@dougefresh/pi-azure-foundry",
-  "version": "1.3.2",
+  "version": "1.3.3",
   "description": "Pi extension for Azure AI Foundry — discovers deployments and registers models",
   "type": "module",
   "main": "./dist/index.js",
