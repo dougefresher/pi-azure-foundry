@@ -3,10 +3,10 @@
  *
  * Discovers models from Azure AI Foundry Deployments API and registers them with pi.
  * Routes to the correct API based on model publisher:
+ *   - OpenAI -> project-scoped OpenAI Responses API at /openai/v1/responses
  *   - Anthropic -> native Messages API at /anthropic/v1/messages
  *   - xAI (Grok) -> OpenAI-compat at /api/projects/{project}/openai/v1/chat/completions
- *     (project-scoped; deployment name passed in the body, no api-version query)
- *   - OpenAI/others -> OpenAI-compat at /openai/deployments/{id}/chat/completions
+ *   - other publishers -> OpenAI-compat at /openai/deployments/{id}/chat/completions
  *
  * Config: ./azure-foundry.config.json
  */
@@ -34,6 +34,12 @@ import {
 } from '@earendil-works/pi-ai';
 import { getBuiltinModels, getBuiltinProviders } from '@earendil-works/pi-ai/providers/all';
 import type { ExtensionAPI } from '@earendil-works/pi-coding-agent';
+import {
+  OPENAI_RESPONSES_MIN_OUTPUT_TOKENS,
+  processResponsesEvents,
+  toResponsesInput,
+  toResponsesTools,
+} from './openai-responses.js';
 // Vendored, not imported from pi-ai: the extension loader only resolves a fixed
 // allowlist of pi-ai specifiers. See src/pi-ai-vendored.ts.
 import { adjustMaxTokensForThinking, transformMessages } from './pi-ai-vendored.js';
@@ -372,21 +378,34 @@ export function resolveModelDetails(
 }
 
 /** Per-deployment API route resolved at discovery time */
-type ApiRoute =
+export type ApiRoute =
   | { kind: 'anthropic-messages' }
+  | { kind: 'openai-responses' }
   | { kind: 'openai-chat-completions'; tokenLimit: OpenAITokenLimitParam; projectScoped?: boolean };
 
 const apiRouteMap = new Map<string, ApiRoute>();
 
+/** Route selected from the deployment publisher during discovery. */
+export function getApiRoute(deploymentName: string): ApiRoute | undefined {
+  return apiRouteMap.get(deploymentName);
+}
+
 /** Infer OpenAI-compat token limit from resolved metadata or model name patterns. */
 function inferOpenAITokenLimit(modelName: string, resolved: ResolvedModelDetails): OpenAITokenLimitParam {
   if (resolved.openaiTokenLimit) return resolved.openaiTokenLimit;
-  // GPT-5 and o-series models reject max_tokens on Azure/OpenAI chat completions
-  if (/^(gpt-5|o[1-9])([-.]|$)/i.test(modelName)) return 'max_completion_tokens';
+  // GPT-5, GPT-6 Astra, and o-series models reject max_tokens on Azure/OpenAI
+  // Chat Completions. GPT-6 Astra uses Responses when published by OpenAI, but
+  // retain this exact match for compatible aliases/routes.
+  if (/^(gpt-5|o[1-9])([-.]|$)/i.test(modelName) || modelName.toLowerCase() === 'gpt-6-astra') {
+    return 'max_completion_tokens';
+  }
   return 'max_tokens';
 }
 
-function resolveApiRoute(d: Deployment, resolved: ResolvedModelDetails): ApiRoute {
+export function resolveApiRoute(d: Deployment, resolved: ResolvedModelDetails): ApiRoute {
+  // GPT reasoning plus function tools requires Responses. It also preserves
+  // encrypted reasoning across the tool loop, unlike Chat Completions.
+  if (d.modelPublisher === 'OpenAI') return { kind: 'openai-responses' };
   if (d.modelPublisher === 'Anthropic') return { kind: 'anthropic-messages' };
   const modelName = d.modelName ?? d.name;
   return {
@@ -398,6 +417,7 @@ function resolveApiRoute(d: Deployment, resolved: ResolvedModelDetails): ApiRout
 
 function describeApiRoute(route: ApiRoute): string {
   if (route.kind === 'anthropic-messages') return 'anthropic-messages';
+  if (route.kind === 'openai-responses') return 'openai-responses (project-scoped /openai/v1)';
   const where = route.projectScoped ? 'project-scoped /openai/v1' : 'deployment-path';
   return `openai-chat-completions (${route.tokenLimit}, ${where})`;
 }
@@ -1046,6 +1066,67 @@ function streamOpenAI(
 }
 
 // =============================================================================
+// OpenAI Responses streaming (Azure OpenAI deployments)
+// =============================================================================
+
+function streamOpenAIResponses(
+  model: Model<Api>,
+  context: Context,
+  options: SimpleStreamOptions | undefined,
+  output: AssistantMessage,
+  stream: ReturnType<typeof createAssistantMessageEventStream>,
+  projectBase: string,
+  auth: ProviderAuth,
+): Promise<void> {
+  return (async () => {
+    // Foundry's project endpoint is deliberately used rather than the legacy
+    // deployment-in-path endpoint: Responses selects the deployment from model.
+    const url = `${projectBase}/openai/v1/responses`;
+    const maxOutput = Math.max(options?.maxTokens ?? model.maxTokens, OPENAI_RESPONSES_MIN_OUTPUT_TOKENS);
+    const body: Record<string, unknown> = {
+      model: model.id,
+      input: toResponsesInput(model, context.systemPrompt, context.messages),
+      max_output_tokens: maxOutput,
+      stream: true,
+      store: false,
+      // Azure requires the encrypted payload on replay when response storage is
+      // disabled. It is opaque to us, captured in thinkingSignature.
+      include: ['reasoning.encrypted_content'],
+    };
+    if (options?.temperature !== undefined) body.temperature = options.temperature;
+    if (context.tools?.length) body.tools = toResponsesTools(context.tools);
+
+    if (model.reasoning) {
+      const effort = resolveReasoningEffort(model, options?.reasoning);
+      if (effort) body.reasoning = { effort, summary: 'auto' };
+    }
+
+    const payload = JSON.stringify(body);
+    const response = await fetchWithRetry(
+      url,
+      async () => {
+        const token = await auth.getToken();
+        // The project-scoped Foundry v1 API accepts Bearer Entra tokens. Keep
+        // api-key auth aligned with its existing OpenAI-compatible project route.
+        const authHeaders: Record<string, string> =
+          auth.type === 'api-key' ? { 'api-key': token } : { Authorization: `Bearer ${token}` };
+        return {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', ...authHeaders },
+          body: payload,
+          signal: options?.signal,
+        };
+      },
+      options?.signal,
+    );
+    if (!response.body) throw new Error('No response body');
+
+    stream.push({ type: 'start', partial: output });
+    await processResponsesEvents(parseSSE(response.body.getReader()), output, stream, model);
+  })();
+}
+
+// =============================================================================
 // Anthropic Messages API streaming
 // =============================================================================
 
@@ -1267,7 +1348,7 @@ function streamAzureFoundry(
       // (Grok) deployments need for their documented project-scoped endpoint.
       const baseHost = new URL(model.baseUrl).origin;
       const projectBase = model.baseUrl;
-      const route = apiRouteMap.get(model.id) ?? { kind: 'openai-chat-completions', tokenLimit: 'max_tokens' };
+      const route = apiRouteMap.get(model.id) ?? { kind: 'openai-chat-completions', tokenLimit: 'max_tokens' }; // Legacy fallback for unknown models.
       // Resolve auth: use registered provider auth, fall back to api-key from options.
       const auth: ProviderAuth = providerAuthMap.get(model.provider) ?? {
         type: 'api-key',
@@ -1276,6 +1357,8 @@ function streamAzureFoundry(
 
       if (route.kind === 'anthropic-messages') {
         await streamAnthropic(model, context, options, output, stream, baseHost, auth);
+      } else if (route.kind === 'openai-responses') {
+        await streamOpenAIResponses(model, context, options, output, stream, projectBase, auth);
       } else {
         await streamOpenAI(model, context, options, output, stream, baseHost, projectBase, auth, route);
       }

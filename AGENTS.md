@@ -8,18 +8,20 @@ A [pi](https://pi.dev) extension that discovers Azure AI Foundry deployments at
 startup and registers them as pi models. A fork of
 [nquandt/pi-azure-foundry](https://github.com/nquandt/pi-azure-foundry).
 
-Everything lives in two files:
+The implementation lives in three files:
 
 | File | Role |
 | ---- | ---- |
-| `src/index.ts` | The whole extension: config, discovery, both API routes, streaming |
+| `src/index.ts` | Config, discovery, routing, and non-Responses API routes |
+| `src/openai-responses.ts` | Azure OpenAI Responses conversion and streaming |
 | `src/pi-ai-vendored.ts` | Copied pi-ai internals that an extension cannot import (see below) |
 
-The extension registers ONE provider (`azure-foundry`) whose models route two
+The extension registers ONE provider (`azure-foundry`) whose models route three
 ways, chosen per deployment at discovery time from `modelPublisher`:
 
+- `OpenAI` → project-scoped `/openai/v1/responses` (Responses API)
 - `Anthropic` → `/anthropic/v1/messages` (native Messages API)
-- everything else → `/openai/deployments/{id}/chat/completions` (OpenAI-compatible)
+- everything else → `/openai/deployments/{id}/chat/completions` (OpenAI-compatible; xAI is project-scoped)
 
 Model metadata (context window, pricing, reasoning support, `thinkingLevelMap`)
 is resolved by matching the Azure catalog model name, case-insensitively, against
@@ -137,14 +139,17 @@ based on assumption:
 - **api-version `2024-10-21` accepts `reasoning_effort`** and reports
   `prompt_tokens_details` / `completion_tokens_details`. There is no need for a
   preview version; `openaiApiVersion` in config exists only as an escape hatch.
-- **`reasoning_effort` + function tools = 400** on chat completions
+- **`reasoning_effort` + function tools = 400** on Chat Completions
   (`Function tools with reasoning_effort are not supported for this model in
-  /v1/chat/completions`). It is gated on there being no tools, which in a coding
-  agent means almost never. Exposing GPT reasoning properly requires the
-  Responses API — a different route, not yet implemented.
-- **Azure's GPT chat-completions route never returns reasoning text**, only
+  /v1/chat/completions`). OpenAI deployments therefore use Responses, which
+  supports both tools and reasoning.
+- **The Responses route is stateless (`store: false`)** and includes
+  `reasoning.encrypted_content`. Azure can provide the encrypted item only in
+  terminal `response.completed`, so it must backfill the stored reasoning item
+  before the next turn. The live smoke test covers this replay.
+- **Azure's GPT Chat Completions route never returns reasoning text**, only
   `completion_tokens_details.reasoning_tokens`. The `reasoning_content` delta
-  plumbing exists for publishers that do emit it (DeepSeek).
+  plumbing remains for compatible publishers that do emit it (DeepSeek).
 - **`prompt_tokens` is inclusive of cached tokens.** Ignoring
   `prompt_tokens_details.cached_tokens` bills cached input at full rate.
 - **The Anthropic passthrough supports `cache_control` and `thinking`.** Caching

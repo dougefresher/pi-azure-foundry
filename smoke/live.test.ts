@@ -16,7 +16,8 @@
  * extension itself uses: ~/.pi/azure-foundry.config.json, plus `az login` when
  * auth.type is azure-identity.
  *
- * Deployment names track infra/foundry.ts, which churns. Override per run:
+ * The OpenAI deployment is the required smoke target. Anthropic coverage is
+ * opt-in because it is not the extension's primary focus:
  *   SMOKE_ANTHROPIC_MODEL=claude-opus-5 bun run smoke
  */
 
@@ -25,10 +26,10 @@ import { existsSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { resolve } from 'node:path';
 import type { Api, AssistantMessage, Context, Message, Model } from '@earendil-works/pi-ai';
-import ext from '../src/index.ts';
+import ext, { getApiRoute } from '../src/index.ts';
 
 const OPENAI_MODEL = process.env.SMOKE_OPENAI_MODEL ?? 'gpt-5.6-luna';
-const ANTHROPIC_MODEL = process.env.SMOKE_ANTHROPIC_MODEL ?? 'claude-sonnet-4-6';
+const ANTHROPIC_MODEL = process.env.SMOKE_ANTHROPIC_MODEL;
 const REASONING_MODEL = process.env.SMOKE_REASONING_MODEL ?? 'DeepSeek-V4-Flash';
 
 const LONE_SURROGATE = String.fromCharCode(0xd83d);
@@ -69,6 +70,8 @@ if (!stream) {
 
 /** True when the deployment is absent — pass straight to test.skipIf. */
 const missing = (id: string): boolean => !models.some((m) => m.id === id);
+const missingAnthropic = !ANTHROPIC_MODEL || missing(ANTHROPIC_MODEL);
+const isResponsesRoute = (id: string): boolean => getApiRoute(id)?.kind === 'openai-responses';
 const model = (id: string): Model<Api> => {
   const m = models.find((x) => x.id === id);
   if (!m) throw new Error(`deployment "${id}" not registered`);
@@ -186,22 +189,16 @@ const surrogateHistory = (id: string): Message[] =>
 
 // -----------------------------------------------------------------------------
 
-// Guard against the silent no-op: if every deployment name has drifted, the
-// suite below skips itself into a green run that verified nothing. This test
-// does not skip, so that shows up as a failure.
-test('at least one target deployment is live', () => {
-  const targets = [OPENAI_MODEL, ANTHROPIC_MODEL, REASONING_MODEL];
-  const present = targets.filter((id) => models.some((m) => m.id === id));
-  if (present.length === 0) {
-    // Thrown rather than asserted so the remedy survives into the output; a
-    // matcher's own failure message would replace it.
+// Guard against the silent no-op: OpenAI is the required target, so a stale
+// default deployment must fail rather than turn the primary suite green-by-skip.
+test('the OpenAI target deployment is live', () => {
+  if (missing(OPENAI_MODEL)) {
     throw new Error(
-      `None of [${targets.join(', ')}] are deployed on this account.\n` +
+      `OpenAI deployment "${OPENAI_MODEL}" is not deployed on this account.\n` +
         `Registered: ${models.map((m) => m.id).join(', ') || '(none)'}\n` +
-        'Set SMOKE_OPENAI_MODEL / SMOKE_ANTHROPIC_MODEL / SMOKE_REASONING_MODEL to live deployment names.',
+        'Set SMOKE_OPENAI_MODEL to a live OpenAI deployment name.',
     );
   }
-  expect(present.length).toBeGreaterThan(0);
 });
 
 describe('openai route', () => {
@@ -224,8 +221,8 @@ describe('openai route', () => {
     TIMEOUT,
   );
 
-  // Azure's chat-completions route reports reasoning as a token count only, never
-  // as text, so these assert acceptance rather than a thinking block.
+  // Responses preserves an opaque reasoning item for replay; summaries remain
+  // model-controlled, so these assert acceptance rather than visible thinking text.
   test.skipIf(missing(OPENAI_MODEL))(
     'reasoning is accepted WITH tools, the way pi actually calls it',
     async () => {
@@ -256,8 +253,42 @@ describe('openai route', () => {
     TIMEOUT,
   );
 
-  test.skipIf(missing(OPENAI_MODEL))(
-    'usage totals reconcile with prompt_tokens',
+  test.skipIf(missing(OPENAI_MODEL) || !isResponsesRoute(OPENAI_MODEL))(
+    'encrypted reasoning replays across a stateless follow-up',
+    async () => {
+      const firstPrompt = 'Calculate 17 times 23. Think carefully, then answer.';
+      const first = await complete(
+        OPENAI_MODEL,
+        [{ role: 'user', content: firstPrompt }] as Message[],
+        { reasoning: 'high' },
+        'You are terse. Answer in under ten words.',
+        [],
+      );
+      const thinking = first.content.find((block) => block.type === 'thinking') as
+        | { thinkingSignature?: string }
+        | undefined;
+      expect(thinking?.thinkingSignature, 'Responses must persist an opaque reasoning item for replay').toContain(
+        'encrypted_content',
+      );
+
+      const second = await complete(
+        OPENAI_MODEL,
+        [
+          { role: 'user', content: firstPrompt },
+          first,
+          { role: 'user', content: 'Now give only the numeric answer.' },
+        ] as Message[],
+        { reasoning: 'high' },
+        'You are terse. Answer in under ten words.',
+        [],
+      );
+      expect(second.content).not.toBeEmpty();
+    },
+    TIMEOUT,
+  );
+
+  test.skipIf(missing(OPENAI_MODEL) || !isResponsesRoute(OPENAI_MODEL))(
+    'usage totals reconcile with Responses input_tokens',
     async () => {
       const { usage } = await complete(OPENAI_MODEL, [{ role: 'user', content: 'Say OK.' }] as Message[]);
       // A mismatch means the cached-token split is wrong, not that Azure lied.
@@ -269,30 +300,30 @@ describe('openai route', () => {
 });
 
 describe('anthropic route', () => {
-  test.skipIf(missing(ANTHROPIC_MODEL))(
+  test.skipIf(missingAnthropic)(
     'orphaned tool call round-trips',
     async () => {
-      const r = await complete(ANTHROPIC_MODEL, orphanedToolCall(ANTHROPIC_MODEL));
+      const r = await complete(ANTHROPIC_MODEL!, orphanedToolCall(ANTHROPIC_MODEL!));
       expect(r.content).not.toBeEmpty();
     },
     TIMEOUT,
   );
 
   // One user message per tool_result would break role alternation here.
-  test.skipIf(missing(ANTHROPIC_MODEL))(
+  test.skipIf(missingAnthropic)(
     'parallel tool results accepted',
     async () => {
-      const r = await complete(ANTHROPIC_MODEL, parallelToolResults(ANTHROPIC_MODEL));
+      const r = await complete(ANTHROPIC_MODEL!, parallelToolResults(ANTHROPIC_MODEL!));
       expect(r.content).not.toBeEmpty();
     },
     TIMEOUT,
   );
 
-  test.skipIf(missing(ANTHROPIC_MODEL))(
+  test.skipIf(missingAnthropic)(
     'thinking returns a thinking block',
     async () => {
       const r = await complete(
-        ANTHROPIC_MODEL,
+        ANTHROPIC_MODEL!,
         [{ role: 'user', content: 'What is 17*23? Think first.' }] as Message[],
         {
           reasoning: 'medium',
@@ -303,24 +334,24 @@ describe('anthropic route', () => {
     TIMEOUT,
   );
 
-  test.skipIf(missing(ANTHROPIC_MODEL))(
+  test.skipIf(missingAnthropic)(
     'prompt cache is read back on replay',
     async () => {
       // Needs a prefix over Anthropic's 1024-token minimum to be eligible.
       const system = 'You are a meticulous code reviewer. '.repeat(320);
       const messages = [{ role: 'user', content: 'Say OK.' }] as Message[];
-      const first = await complete(ANTHROPIC_MODEL, messages, {}, system);
+      const first = await complete(ANTHROPIC_MODEL!, messages, {}, system);
       expect(first.usage.cacheWrite + first.usage.cacheRead).toBeGreaterThan(0);
-      const second = await complete(ANTHROPIC_MODEL, messages, {}, system);
+      const second = await complete(ANTHROPIC_MODEL!, messages, {}, system);
       expect(second.usage.cacheRead).toBeGreaterThan(0);
     },
     TIMEOUT,
   );
 
-  test.skipIf(missing(ANTHROPIC_MODEL))(
+  test.skipIf(missingAnthropic)(
     'cacheRetention=none suppresses caching without breaking the call',
     async () => {
-      const r = await complete(ANTHROPIC_MODEL, [{ role: 'user', content: 'Say OK.' }] as Message[], {
+      const r = await complete(ANTHROPIC_MODEL!, [{ role: 'user', content: 'Say OK.' }] as Message[], {
         cacheRetention: 'none',
       });
       expect(r.usage.cacheWrite).toBe(0);
@@ -346,14 +377,14 @@ describe('reasoning passthrough', () => {
 });
 
 describe.each([
-  ['openai', OPENAI_MODEL],
-  ['anthropic', ANTHROPIC_MODEL],
-])('%s route: unicode', (_label, id) => {
+  ['openai', OPENAI_MODEL, false],
+  ['anthropic', ANTHROPIC_MODEL, missingAnthropic],
+])('%s route: unicode', (_label, id, skip) => {
   // Azure 400s on unpaired surrogates; tool output truncated mid-emoji has them.
-  test.skipIf(missing(id))(
+  test.skipIf(skip || !id || missing(id))(
     'lone surrogate in history survives the round trip',
     async () => {
-      const r = await complete(id, surrogateHistory(id), {}, `You are terse ${LONE_SURROGATE}`);
+      const r = await complete(id!, surrogateHistory(id!), {}, `You are terse ${LONE_SURROGATE}`);
       expect(r.content).not.toBeEmpty();
     },
     TIMEOUT,
