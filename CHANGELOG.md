@@ -1,5 +1,11 @@
 # @dougefresh/pi-azure-foundry
 
+## 1.4.0
+
+### Minor Changes
+
+- 21935b9: Route Azure OpenAI deployments through the Foundry Responses API. GPT reasoning now works with function tools and encrypted reasoning state is replayed across tool turns for both API-key and Azure identity authentication.
+
 ## 1.3.3
 
 ### Patch Changes
