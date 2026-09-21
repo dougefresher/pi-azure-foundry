@@ -1,5 +1,11 @@
 # @dougefresh/pi-azure-foundry
 
+## 1.4.1
+
+### Patch Changes
+
+- a52bdc8: Update provider streaming for pi-ai's transcript-backed system prompts and tool declarations.
+
 ## 1.4.0
 
 ### Minor Changes
