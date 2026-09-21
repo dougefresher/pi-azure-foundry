@@ -18,6 +18,7 @@ import {
   type AssistantMessageEventStream,
   calculateCost,
   type ImageContent,
+  type JsonObject,
   type Message,
   type Model,
   type TextContent,
@@ -37,9 +38,13 @@ function sanitizeSurrogates(text: string): string {
   return text.replace(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/g, '');
 }
 
-function parsePartialJson(raw: string): Record<string, unknown> {
+function parsePartialJson(raw: string): JsonObject {
   try {
-    return JSON.parse(raw) as Record<string, unknown>;
+    const parsed: unknown = JSON.parse(raw);
+    // Tool calls require a JSON object. Valid JSON scalars and arrays are still
+    // invalid function arguments, so retain the empty object until the stream
+    // produces an object-shaped payload.
+    return typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed) ? (parsed as JsonObject) : {};
   } catch {
     return {};
   }
