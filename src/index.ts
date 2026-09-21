@@ -19,9 +19,10 @@ import {
   type Api,
   type AssistantMessage,
   type AssistantMessageEventStream,
-  type Context,
   calculateCost,
   createAssistantMessageEventStream,
+  getCurrentSystemPrompt,
+  getCurrentTools,
   type ImageContent,
   type Message,
   type Model,
@@ -31,6 +32,7 @@ import {
   type ThinkingContent,
   type Tool,
   type ToolResultMessage,
+  type TranscriptContext,
 } from '@earendil-works/pi-ai';
 import { getBuiltinModels, getBuiltinProviders } from '@earendil-works/pi-ai/providers/all';
 import type { ExtensionAPI } from '@earendil-works/pi-coding-agent';
@@ -865,7 +867,7 @@ function toAnthropicTools(tools: Tool[]): unknown[] {
 
 function streamOpenAI(
   model: Model<Api>,
-  context: Context,
+  context: TranscriptContext,
   options: SimpleStreamOptions | undefined,
   output: AssistantMessage,
   stream: ReturnType<typeof createAssistantMessageEventStream>,
@@ -875,6 +877,9 @@ function streamOpenAI(
   route: Extract<ApiRoute, { kind: 'openai-chat-completions' }>,
 ): Promise<void> {
   return (async () => {
+    const systemPrompt = getCurrentSystemPrompt(context.messages);
+    const tools = getCurrentTools(context.messages);
+
     // xAI (Grok) deployments use the documented project-scoped endpoint
     // /api/projects/{project}/openai/v1/chat/completions with the deployment
     // name passed in the body (no api-version query — the /v1 path handles
@@ -886,14 +891,14 @@ function streamOpenAI(
       : `${baseHost}/openai/deployments/${model.id}/chat/completions?api-version=${openaiApiVersion}`;
     const maxOutput = options?.maxTokens ?? model.maxTokens;
     const body: Record<string, unknown> = {
-      messages: toOpenAIMessages(model, context.systemPrompt, context.messages),
+      messages: toOpenAIMessages(model, systemPrompt, context.messages),
       [route.tokenLimit]: maxOutput,
       stream: true,
       stream_options: { include_usage: true },
     };
     if (projectScoped) body.model = model.id;
     if (options?.temperature !== undefined) body.temperature = options.temperature;
-    if (context.tools?.length) body.tools = toOpenAITools(context.tools);
+    if (tools.length) body.tools = toOpenAITools(tools);
     // reasoning_effort is incompatible with function tools on this route:
     //   400 "Function tools with reasoning_effort are not supported for this model
     //        in /v1/chat/completions. Please use /v1/responses instead."
@@ -902,7 +907,7 @@ function streamOpenAI(
     // chat-completions route never returns reasoning text anyway, only token
     // counts, so the parameter only ever influenced effort — and exposing GPT
     // reasoning properly needs the Responses API, a different route entirely.
-    if (model.reasoning && !context.tools?.length) {
+    if (model.reasoning && !tools.length) {
       const effort = resolveReasoningEffort(model, options?.reasoning);
       if (effort) body.reasoning_effort = effort;
     }
@@ -1071,7 +1076,7 @@ function streamOpenAI(
 
 function streamOpenAIResponses(
   model: Model<Api>,
-  context: Context,
+  context: TranscriptContext,
   options: SimpleStreamOptions | undefined,
   output: AssistantMessage,
   stream: ReturnType<typeof createAssistantMessageEventStream>,
@@ -1079,13 +1084,16 @@ function streamOpenAIResponses(
   auth: ProviderAuth,
 ): Promise<void> {
   return (async () => {
+    const systemPrompt = getCurrentSystemPrompt(context.messages);
+    const tools = getCurrentTools(context.messages);
+
     // Foundry's project endpoint is deliberately used rather than the legacy
     // deployment-in-path endpoint: Responses selects the deployment from model.
     const url = `${projectBase}/openai/v1/responses`;
     const maxOutput = Math.max(options?.maxTokens ?? model.maxTokens, OPENAI_RESPONSES_MIN_OUTPUT_TOKENS);
     const body: Record<string, unknown> = {
       model: model.id,
-      input: toResponsesInput(model, context.systemPrompt, context.messages),
+      input: toResponsesInput(model, systemPrompt, context.messages),
       max_output_tokens: maxOutput,
       stream: true,
       store: false,
@@ -1094,7 +1102,7 @@ function streamOpenAIResponses(
       include: ['reasoning.encrypted_content'],
     };
     if (options?.temperature !== undefined) body.temperature = options.temperature;
-    if (context.tools?.length) body.tools = toResponsesTools(context.tools);
+    if (tools.length) body.tools = toResponsesTools(tools);
 
     if (model.reasoning) {
       const effort = resolveReasoningEffort(model, options?.reasoning);
@@ -1132,7 +1140,7 @@ function streamOpenAIResponses(
 
 function streamAnthropic(
   model: Model<Api>,
-  context: Context,
+  context: TranscriptContext,
   options: SimpleStreamOptions | undefined,
   output: AssistantMessage,
   stream: ReturnType<typeof createAssistantMessageEventStream>,
@@ -1140,6 +1148,8 @@ function streamAnthropic(
   auth: ProviderAuth,
 ): Promise<void> {
   return (async () => {
+    const systemPrompt = getCurrentSystemPrompt(context.messages);
+    const tools = getCurrentTools(context.messages);
     const url = `${baseHost}/anthropic/v1/messages`;
     const messages = toAnthropicMessages(model, context.messages);
 
@@ -1168,16 +1178,16 @@ function streamAnthropic(
     // the static prefix is billed at cache-read rates on the next turn. Without
     // this, cache_read_input_tokens is always 0 and every turn pays full price.
     const cacheControl = options?.cacheRetention === 'none' ? undefined : { type: 'ephemeral' };
-    if (context.systemPrompt) {
+    if (systemPrompt) {
       body.system = [
         {
           type: 'text',
-          text: sanitizeSurrogates(context.systemPrompt),
+          text: sanitizeSurrogates(systemPrompt),
           ...(cacheControl ? { cache_control: cacheControl } : {}),
         },
       ];
     }
-    if (context.tools?.length) body.tools = toAnthropicTools(context.tools);
+    if (tools.length) body.tools = toAnthropicTools(tools);
     if (cacheControl) markLastBlockCacheable(messages, cacheControl);
 
     const payload = JSON.stringify(body);
@@ -1318,7 +1328,7 @@ function streamAnthropic(
 
 function streamAzureFoundry(
   model: Model<Api>,
-  context: Context,
+  context: TranscriptContext,
   options?: SimpleStreamOptions,
 ): AssistantMessageEventStream {
   const stream = createAssistantMessageEventStream();
