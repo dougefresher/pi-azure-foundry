@@ -1182,9 +1182,12 @@ function streamAnthropic(
       stream: true,
     };
     if (budget) body.thinking = { type: 'enabled', budget_tokens: budget.thinkingBudget };
-    // Anthropic rejects temperature alongside extended thinking.
+    // Anthropic rejects temperature alongside extended thinking. Sampling
+    // parameters merge last so request-level values override model defaults;
+    // remove temperature again when thinking is enabled.
     if (options?.temperature !== undefined && !budget) body.temperature = options.temperature;
     Object.assign(body, model.samplingParams, options?.samplingParams);
+    if (budget) delete body.temperature;
 
     // Prompt caching: mark the system prompt and the tail of the conversation so
     // the static prefix is billed at cache-read rates on the next turn. Without

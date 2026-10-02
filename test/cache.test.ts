@@ -7,7 +7,7 @@
  *
  * Run with `bun test`.
  */
-import { describe, expect, test } from 'bun:test';
+import { describe, expect, spyOn, test } from 'bun:test';
 import { existsSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -87,11 +87,14 @@ describe('isDeploymentCacheEntryUsable', () => {
     expect(isDeploymentCacheEntryUsable(stale, 'k', DEFAULT_CACHE_TTL_MS)).toBe(false);
   });
 
-  test('an entry just within the TTL is usable', () => {
-    // Date.now() is sampled inside the predicate, so an exact boundary is
-    // already stale by the time this assertion runs.
-    const justWithinTtl = { ...base, fetchedAt: Date.now() - DEFAULT_CACHE_TTL_MS + 10 };
-    expect(isDeploymentCacheEntryUsable(justWithinTtl, 'k', DEFAULT_CACHE_TTL_MS)).toBe(true);
+  test('exactly-at-TTL entry is still usable', () => {
+    const clock = spyOn(Date, 'now').mockReturnValue(now);
+    try {
+      const atEdge = { ...base, fetchedAt: now - DEFAULT_CACHE_TTL_MS };
+      expect(isDeploymentCacheEntryUsable(atEdge, 'k', DEFAULT_CACHE_TTL_MS)).toBe(true);
+    } finally {
+      clock.mockRestore();
+    }
   });
 
   test('key mismatch (different resource/project) is a miss', () => {
