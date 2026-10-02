@@ -7,7 +7,7 @@
  *
  * Run with `bun test`.
  */
-import { describe, expect, test } from 'bun:test';
+import { describe, expect, spyOn, test } from 'bun:test';
 import { existsSync, mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -88,8 +88,13 @@ describe('isDeploymentCacheEntryUsable', () => {
   });
 
   test('exactly-at-TTL entry is still usable', () => {
-    const atEdge = { ...base, fetchedAt: now - DEFAULT_CACHE_TTL_MS };
-    expect(isDeploymentCacheEntryUsable(atEdge, 'k', DEFAULT_CACHE_TTL_MS)).toBe(true);
+    const clock = spyOn(Date, 'now').mockReturnValue(now);
+    try {
+      const atEdge = { ...base, fetchedAt: now - DEFAULT_CACHE_TTL_MS };
+      expect(isDeploymentCacheEntryUsable(atEdge, 'k', DEFAULT_CACHE_TTL_MS)).toBe(true);
+    } finally {
+      clock.mockRestore();
+    }
   });
 
   test('key mismatch (different resource/project) is a miss', () => {

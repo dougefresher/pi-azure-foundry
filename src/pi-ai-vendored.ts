@@ -1,5 +1,5 @@
 /**
- * Vendored from pi-ai 0.83.0. DO NOT import these from pi-ai directly.
+ * Vendored from pi-ai 0.83.0 and re-diffed through 1.0.0. DO NOT import these from pi-ai directly.
  *
  * pi's extension loader (pi-coding-agent dist/core/extensions/loader.js) resolves
  * a fixed allowlist of specifiers for extensions — the whole map is:
@@ -109,7 +109,7 @@ export function transformMessages<TApi extends Api>(
 
   // First pass: image downgrade, thinking blocks, tool call ID normalization.
   const transformed = imageAwareMessages.map((msg) => {
-    if (msg.role === 'user') return msg;
+    if (msg.role === 'system' || msg.role === 'user') return msg;
 
     if (msg.role === 'toolResult') {
       const normalizedId = toolCallIdMap.get(msg.toolCallId);
@@ -178,8 +178,12 @@ export function transformMessages<TApi extends Api>(
   const result: Message[] = [];
   let pendingToolCalls: ToolCall[] = [];
   let existingToolResultIds = new Set<string>();
+  // System messages are transparent to tool-call accounting: if one lands
+  // between calls and results, emit it only after those results. Otherwise the
+  // following tool results look orphaned and get duplicated synthetically.
+  const heldSystemMessages: Message[] = [];
 
-  const insertSyntheticToolResults = () => {
+  const closePendingToolCalls = () => {
     if (pendingToolCalls.length > 0) {
       for (const tc of pendingToolCalls) {
         if (!existingToolResultIds.has(tc.id)) {
@@ -196,13 +200,15 @@ export function transformMessages<TApi extends Api>(
       pendingToolCalls = [];
       existingToolResultIds = new Set();
     }
+    result.push(...heldSystemMessages);
+    heldSystemMessages.length = 0;
   };
 
   for (let i = 0; i < transformed.length; i++) {
     const msg = transformed[i];
 
     if (msg.role === 'assistant') {
-      insertSyntheticToolResults();
+      closePendingToolCalls();
 
       // Skip errored/aborted assistant turns entirely: they may hold partial
       // content, replaying them causes API errors, and the model should retry
@@ -222,9 +228,15 @@ export function transformMessages<TApi extends Api>(
     } else if (msg.role === 'toolResult') {
       existingToolResultIds.add(msg.toolCallId);
       result.push(msg);
+    } else if (msg.role === 'system') {
+      if (pendingToolCalls.length > 0) {
+        heldSystemMessages.push(msg);
+      } else {
+        result.push(msg);
+      }
     } else if (msg.role === 'user') {
       // A user message interrupts the tool flow.
-      insertSyntheticToolResults();
+      closePendingToolCalls();
       result.push(msg);
     } else {
       result.push(msg);
@@ -232,7 +244,7 @@ export function transformMessages<TApi extends Api>(
   }
 
   // A conversation ending on unresolved tool calls still needs results.
-  insertSyntheticToolResults();
+  closePendingToolCalls();
 
   return result;
 }
