@@ -911,6 +911,9 @@ function streamOpenAI(
       const effort = resolveReasoningEffort(model, options?.reasoning);
       if (effort) body.reasoning_effort = effort;
     }
+    // Mirror pi-ai's direct stream() adapters: model defaults apply unless a
+    // per-request sampling parameter overrides them.
+    Object.assign(body, model.samplingParams, options?.samplingParams);
 
     const payload = JSON.stringify(body);
     const response = await fetchWithRetry(
@@ -945,6 +948,7 @@ function streamOpenAI(
       } catch {
         continue;
       }
+      await options?.onProviderStreamEvent?.(chunk, model);
 
       if (chunk.usage) {
         // `prompt_tokens` is inclusive of cached tokens. Billing them at the full
@@ -1108,6 +1112,7 @@ function streamOpenAIResponses(
       const effort = resolveReasoningEffort(model, options?.reasoning);
       if (effort) body.reasoning = { effort, summary: 'auto' };
     }
+    Object.assign(body, model.samplingParams, options?.samplingParams);
 
     const payload = JSON.stringify(body);
     const response = await fetchWithRetry(
@@ -1130,7 +1135,13 @@ function streamOpenAIResponses(
     if (!response.body) throw new Error('No response body');
 
     stream.push({ type: 'start', partial: output });
-    await processResponsesEvents(parseSSE(response.body.getReader()), output, stream, model);
+    await processResponsesEvents(
+      parseSSE(response.body.getReader()),
+      output,
+      stream,
+      model,
+      options?.onProviderStreamEvent,
+    );
   })();
 }
 
@@ -1173,6 +1184,7 @@ function streamAnthropic(
     if (budget) body.thinking = { type: 'enabled', budget_tokens: budget.thinkingBudget };
     // Anthropic rejects temperature alongside extended thinking.
     if (options?.temperature !== undefined && !budget) body.temperature = options.temperature;
+    Object.assign(body, model.samplingParams, options?.samplingParams);
 
     // Prompt caching: mark the system prompt and the tail of the conversation so
     // the static prefix is billed at cache-read rates on the next turn. Without
@@ -1226,6 +1238,7 @@ function streamAnthropic(
       } catch {
         continue;
       }
+      await options?.onProviderStreamEvent?.(event, model);
 
       if (event.type === 'message_start' && event.message?.usage) {
         output.usage.input = event.message.usage.input_tokens ?? 0;

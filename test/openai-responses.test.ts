@@ -146,7 +146,14 @@ describe('OpenAI Responses stream assembly', () => {
       timestamp: Date.now(),
     } as unknown as AssistantMessage;
     const events: any[] = [];
-    await processResponsesEvents(payloads(), output, { push: (event: any) => events.push(event) }, model);
+    const providerEvents: any[] = [];
+    await processResponsesEvents(
+      payloads(),
+      output,
+      { push: (event: any) => events.push(event) },
+      model,
+      async (event) => providerEvents.push(event),
+    );
 
     expect(output.responseId).toBe('resp_1');
     expect(output.stopReason).toBe('toolUse');
@@ -160,5 +167,37 @@ describe('OpenAI Responses stream assembly', () => {
     const thought = output.content.find((block) => block.type === 'thinking') as any;
     expect(JSON.parse(thought.thinkingSignature)).toMatchObject({ encrypted_content: 'opaque-to-pi' });
     expect(events.map((event) => event.type)).toContain('toolcall_end');
+    expect(providerEvents.map((event) => event.type)).toContain('response.completed');
+  });
+
+  test('rejects a terminal tool-use response with an unfinished function call', async () => {
+    function* payloads(): Generator<string> {
+      yield JSON.stringify({
+        type: 'response.output_item.added',
+        output_index: 0,
+        item: { type: 'function_call', id: 'fc_1', call_id: 'call_1', name: 'read', arguments: '' },
+      });
+      yield JSON.stringify({
+        type: 'response.function_call_arguments.delta',
+        output_index: 0,
+        delta: '{"path":"x.ts"}',
+      });
+      yield JSON.stringify({ type: 'response.completed', response: { status: 'completed', output: [] } });
+    }
+
+    const output = {
+      role: 'assistant',
+      content: [],
+      api: 'azure-foundry',
+      provider: 'azure-foundry',
+      model: 'gpt-5.6-sol',
+      usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0, cost: {} },
+      stopReason: 'pending',
+      timestamp: Date.now(),
+    } as unknown as AssistantMessage;
+
+    await expect(processResponsesEvents(payloads(), output, { push: () => {} }, model)).rejects.toThrow(
+      'unfinished tool call: read (call_1|fc_1)',
+    );
   });
 });

@@ -9,6 +9,7 @@
 import { describe, expect, test } from 'bun:test';
 import type { Api, Message, Model } from '@earendil-works/pi-ai';
 import { sanitizeSurrogates, toAnthropicMessages, toOpenAIMessages } from '../src/index.ts';
+import { transformMessages } from '../src/pi-ai-vendored.ts';
 
 const gpt = {
   id: 'gpt-5',
@@ -76,6 +77,22 @@ describe('tool calls without results', () => {
     );
     expect(uses).toEqual(['call_1']);
     expect(results).toEqual(['call_1']);
+  });
+});
+
+describe('system messages inside a tool turn', () => {
+  test('stay after the tool result instead of synthesizing a duplicate result', () => {
+    const normalized = transformMessages(
+      [
+        assistantWithCalls({ id: 'call_1', name: 'bash' }),
+        { role: 'system', content: 'Tool output follows.' } as unknown as Message,
+        toolResult('call_1', 'done'),
+      ],
+      gpt,
+    );
+
+    expect(normalized.map((message) => message.role)).toEqual(['assistant', 'toolResult', 'system']);
+    expect(normalized.filter((message) => message.role === 'toolResult')).toHaveLength(1);
   });
 });
 

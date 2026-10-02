@@ -21,6 +21,7 @@ import {
   type JsonObject,
   type Message,
   type Model,
+  type SimpleStreamOptions,
   type TextContent,
   type ThinkingContent,
   type Tool,
@@ -251,6 +252,7 @@ export async function processResponsesEvents(
   output: AssistantMessage,
   stream: StreamSink,
   model: Model<Api>,
+  onProviderStreamEvent?: SimpleStreamOptions['onProviderStreamEvent'],
 ): Promise<void> {
   let sawTerminal = false;
   const slots = new Map<number, OutputSlot>();
@@ -353,6 +355,7 @@ export async function processResponsesEvents(
     } catch {
       continue;
     }
+    await onProviderStreamEvent?.(event, model);
 
     if (event.type === 'response.created' && event.response?.id) {
       output.responseId = event.response.id;
@@ -480,5 +483,19 @@ export async function processResponsesEvents(
 
   if (!sawTerminal) {
     throw new Error('Azure OpenAI Responses stream ended before a terminal response event');
+  }
+  // pi executes every tool call in a terminal tool-use response. Do not hand it
+  // a call that never received output_item.done: its arguments can be truncated
+  // or mixed with another call when a Responses-compatible server streams an
+  // invalid output_index.
+  if (output.stopReason === 'toolUse') {
+    for (const block of output.content) {
+      if (block.type !== 'toolCall') continue;
+      if ((block as StreamingToolCall).partialJson !== undefined) {
+        throw new Error(
+          `Azure OpenAI Responses stream completed with an unfinished tool call: ${block.name} (${block.id})`,
+        );
+      }
+    }
   }
 }
