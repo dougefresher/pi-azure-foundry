@@ -1,5 +1,11 @@
 # @dougefresh/pi-azure-foundry
 
+## 1.4.2
+
+### Patch Changes
+
+- 86c6122: pi v1.0.0
+
 ## 1.4.1
 
 ### Patch Changes
